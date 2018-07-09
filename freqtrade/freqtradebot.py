@@ -21,6 +21,7 @@ from freqtrade.fiat_convert import CryptoToFiatConverter
 from freqtrade.persistence import Trade
 from freqtrade.rpc.rpc_manager import RPCManager
 from freqtrade.state import State
+from freqtrade.strategy.resolver import IStrategy, StrategyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ class FreqtradeBot(object):
 
         # Init objects
         self.config = config
-        self.analyze = Analyze(self.config)
+        self.strategy: IStrategy = StrategyResolver(self.config).strategy
+        self.analyze = Analyze(self.config, self.strategy)
         self.fiat_converter = CryptoToFiatConverter()
         self.rpc: RPCManager = RPCManager(self)
         self.persistence = None
@@ -288,8 +290,8 @@ class FreqtradeBot(object):
             return None
 
         amount_reserve_percent = 1 - 0.05  # reserve 5% + stoploss
-        if self.analyze.get_stoploss() is not None:
-            amount_reserve_percent += self.analyze.get_stoploss()
+        if self.strategy.stoploss is not None:
+            amount_reserve_percent += self.strategy.stoploss
         # it should not be more than 50%
         amount_reserve_percent = max(amount_reserve_percent, 0.5)
         return min(min_stake_amounts)/amount_reserve_percent
@@ -300,7 +302,7 @@ class FreqtradeBot(object):
         if one pair triggers the buy_signal a new trade record gets created
         :return: True if a trade object has been created and persisted, False otherwise
         """
-        interval = self.analyze.get_ticker_interval()
+        interval = self.strategy.ticker_interval
         stake_amount = self._get_trade_stake_amount()
 
         if not stake_amount:
@@ -490,7 +492,7 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
         experimental = self.config.get('experimental', {})
         if experimental.get('use_sell_signal') or experimental.get('ignore_roi_if_buy_signal'):
             (buy, sell) = self.analyze.get_signal(self.exchange,
-                                                  trade.pair, self.analyze.get_ticker_interval())
+                                                  trade.pair, self.strategy.ticker_interval)
 
         if self.analyze.should_sell(trade, current_rate, datetime.utcnow(), buy, sell):
             self.execute_sell(trade, current_rate)
