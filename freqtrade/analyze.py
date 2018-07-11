@@ -25,6 +25,16 @@ class SignalType(Enum):
     SELL = "sell"
 
 
+class SellType(Enum):
+    """
+    Enum to distinguish between sell reasons
+    """
+    ROI = "roi"
+    STOP_LOSS = "stop_loss"
+    TRAILING_STOP_LOSS = "trailing_stop_loss"
+    SELL_SIGNAL = "sell_signal"
+
+
 class Analyze(object):
     """
     Analyze class contains everything the bot need to determine if the situation is good for
