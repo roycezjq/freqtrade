@@ -15,7 +15,7 @@ from cachetools import TTLCache, cached
 
 from freqtrade import (DependencyException, OperationalException,
                        TemporaryError, __version__, constants, persistence)
-from freqtrade.analyze import Analyze
+from freqtrade.analyze import Analyze, SellType
 from freqtrade.exchange import Exchange
 from freqtrade.fiat_convert import CryptoToFiatConverter
 from freqtrade.persistence import Trade
@@ -492,8 +492,9 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
             (buy, sell) = self.analyze.get_signal(self.exchange,
                                                   trade.pair, self.analyze.get_ticker_interval())
 
-        if self.analyze.should_sell(trade, current_rate, datetime.utcnow(), buy, sell):
-            self.execute_sell(trade, current_rate)
+        should_sell = self.analyze.should_sell(trade, current_rate, datetime.utcnow(), buy, sell)
+        if should_sell[0]:
+            self.execute_sell(trade, current_rate, should_sell[1])
             return True
         logger.info('Found no sell signals for whitelisted currencies. Trying again..')
         return False
@@ -585,11 +586,12 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
         # TODO: figure out how to handle partially complete sell orders
         return False
 
-    def execute_sell(self, trade: Trade, limit: float) -> None:
+    def execute_sell(self, trade: Trade, limit: float, sellreason: SellType) -> None:
         """
         Executes a limit sell for the given trade and limit
         :param trade: Trade instance
         :param limit: limit rate for the sell order
+        :param sellrason: Reaseon the sell was triggered
         :return: None
         """
         exc = trade.exchange
@@ -598,6 +600,7 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
         order_id = self.exchange.sell(str(trade.pair), limit, trade.amount)['id']
         trade.open_order_id = order_id
         trade.close_rate_requested = limit
+        trade.sell_reason = sellreason.value
 
         fmt_exp_profit = round(trade.calc_profit_percent(rate=limit) * 100, 2)
         profit_trade = trade.calc_profit(rate=limit)
