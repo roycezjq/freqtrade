@@ -34,6 +34,7 @@ class SellType(Enum):
     TRAILING_STOP_LOSS = "trailing_stop_loss"
     SELL_SIGNAL = "sell_signal"
     FORCE_SELL = "force_sell"
+    NONE = ""
 
 
 class Analyze(object):
@@ -185,7 +186,7 @@ class Analyze(object):
         return buy, sell
 
     def should_sell(self, trade: Trade, rate: float, date: datetime, buy: bool,
-                    sell: bool) -> Tuple[bool, Optional[SellType]]:
+                    sell: bool) -> Tuple[bool, SellType]:
         """
         This function evaluate if on the condition required to trigger a sell has been reached
         if the threshold is reached and updates the trade record.
@@ -201,7 +202,7 @@ class Analyze(object):
 
         if buy and experimental.get('ignore_roi_if_buy_signal', False):
             logger.debug('Buy signal still active - not selling.')
-            return (False, None)
+            return (False, SellType.NONE)
 
         # Check if minimal roi has been reached and no longer in buy conditions (avoiding a fee)
         if self.min_roi_reached(trade=trade, current_profit=current_profit, current_time=date):
@@ -211,15 +212,15 @@ class Analyze(object):
         if experimental.get('sell_profit_only', False):
             logger.debug('Checking if trade is profitable..')
             if trade.calc_profit(rate=rate) <= 0:
-                return (False, None)
+                return (False, SellType.NONE)
         if sell and not buy and experimental.get('use_sell_signal', False):
             logger.debug('Sell signal received. Selling..')
             return (True, SellType.SELL_SIGNAL)
 
-        return (False, None)
+        return (False, SellType.NONE)
 
     def stop_loss_reached(self, current_rate: float, trade: Trade, current_time: datetime,
-                          current_profit: float) -> Tuple[bool, Optional[SellType]]:
+                          current_profit: float) -> Tuple[bool, SellType]:
         """
         Based on current profit of the trade and configured (trailing) stoploss,
         decides to sell or not
@@ -259,7 +260,7 @@ class Analyze(object):
 
             trade.adjust_stop_loss(current_rate, stop_loss_value)
 
-        return (False, None)
+        return (False, SellType.NONE)
 
     def min_roi_reached(self, trade: Trade, current_profit: float, current_time: datetime) -> bool:
         """
