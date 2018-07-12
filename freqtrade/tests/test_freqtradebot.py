@@ -16,7 +16,7 @@ import requests
 
 from freqtrade import (DependencyException, OperationalException,
                        TemporaryError, constants)
-from freqtrade.analyze import SellType
+from freqtrade.analyze import SellType, SellCheckTuple
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Trade
 from freqtrade.state import State
@@ -1589,7 +1589,8 @@ def test_sell_profit_only_enable_loss(default_conf, limit_buy_order, fee, market
     patch_get_signal(mocker)
     patch_RPCManager(mocker)
     patch_coinmarketcap(mocker)
-    mocker.patch('freqtrade.freqtradebot.Analyze.stop_loss_reached', return_value=(False, None))
+    mocker.patch('freqtrade.freqtradebot.Analyze.stop_loss_reached',
+                 return_value=SellCheckTuple(sell_flag=False, sell_type=SellType.NONE))
     mocker.patch.multiple(
         'freqtrade.exchange.Exchange',
         validate_pairs=MagicMock(),

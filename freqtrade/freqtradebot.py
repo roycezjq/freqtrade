@@ -494,8 +494,8 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
                                                   trade.pair, self.analyze.get_ticker_interval())
 
         should_sell = self.analyze.should_sell(trade, current_rate, datetime.utcnow(), buy, sell)
-        if should_sell[0]:
-            self.execute_sell(trade, current_rate, should_sell[1])
+        if should_sell.sell_flag:
+            self.execute_sell(trade, current_rate, should_sell.sell_type)
             return True
         logger.info('Found no sell signals for whitelisted currencies. Trying again..')
         return False
