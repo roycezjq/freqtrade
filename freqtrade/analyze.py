@@ -103,6 +103,12 @@ class Analyze(object):
         """
         return self.strategy.populate_sell_trend(dataframe=dataframe)
 
+    def get_strategy_name(self) -> str:
+        """
+        Returns strategy class name
+        """
+        return self.strategy.__class__.__name__
+
     def get_ticker_interval(self) -> str:
         """
         Return ticker interval to use
