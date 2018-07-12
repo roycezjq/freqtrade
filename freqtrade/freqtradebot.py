@@ -53,7 +53,6 @@ class FreqtradeBot(object):
         self.rpc: RPCManager = RPCManager(self)
         self.persistence = None
         self.exchange = Exchange(self.config)
-
         self._init_modules()
 
     def _init_modules(self) -> None:
@@ -379,7 +378,9 @@ with limit `{buy_limit:.8f} ({stake_amount:.6f} \
             open_rate_requested=buy_limit,
             open_date=datetime.utcnow(),
             exchange=self.exchange.id,
-            open_order_id=order_id
+            open_order_id=order_id,
+            strategy=self.analyze.get_strategy_name(),
+            ticker_interval=constants.TICKER_INTERVAL_MINUTES[self.analyze.get_ticker_interval()]
         )
         Trade.session.add(trade)
         Trade.session.flush()
