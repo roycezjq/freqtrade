@@ -3,10 +3,10 @@
 """
 This module contains the hyperopt logic
 """
-
 import locale
 import logging
 import sys
+
 from collections import OrderedDict
 from operator import itemgetter
 from pathlib import Path
@@ -14,10 +14,10 @@ from pprint import pprint
 from typing import Any, Dict, List, Optional
 
 import rapidjson
-from colorama import Fore, Style
+
 from colorama import init as colorama_init
-from joblib import (Parallel, cpu_count, delayed, dump, load,
-                    wrap_non_picklable_objects)
+from colorama import Fore, Style
+from joblib import Parallel, delayed, dump, load, wrap_non_picklable_objects, cpu_count
 from pandas import DataFrame
 from skopt import Optimizer
 from skopt.space import Dimension
@@ -28,11 +28,10 @@ from freqtrade.optimize.backtesting import Backtesting
 # Import IHyperOpt and IHyperOptLoss to allow unpickling classes from these modules
 from freqtrade.optimize.hyperopt_interface import IHyperOpt  # noqa: F4
 from freqtrade.optimize.hyperopt_loss_interface import IHyperOptLoss  # noqa: F4
-from freqtrade.resolvers.hyperopt_resolver import (HyperOptLossResolver,
-                                                   HyperOptResolver)
+from freqtrade.resolvers.hyperopt_resolver import HyperOptResolver, HyperOptLossResolver
+
 
 logger = logging.getLogger(__name__)
-
 
 INITIAL_POINTS = 30
 
@@ -213,10 +212,11 @@ class Hyperopt:
                     log_str = Fore.GREEN + log_str
                 if print_all and is_best_loss:
                     log_str = Style.BRIGHT + log_str
-            if print_all:
+            if print_all and results['total_profit'] > 0:
                 print(log_str)
             else:
-                print(f'\n{log_str}')
+                if results['total_profit'] > 0:
+                    print('\n' + log_str)
         else:
             print('.', end='')
             sys.stdout.flush()
@@ -227,7 +227,7 @@ class Hyperopt:
         total = self.total_epochs
         res = results['results_explanation']
         loss = results['loss']
-        log_str = f'{current:5d}/{total}: {res} Objective: {loss:.5f}'
+        log_str = f'{current:5d}/{total}: {res} Objective: {loss:.5f}\n'
         log_str = f'*{log_str}' if results['is_initial_point'] else f' {log_str}'
         return log_str
 
@@ -295,7 +295,7 @@ class Hyperopt:
                 'end_date': max_date,
             }
         )
-        results_explanation = self.format_results(results)
+        results_explanation = self.format_results(results, params)
 
         trade_count = len(results.index)
         total_profit = results.profit_abs.sum()
@@ -304,6 +304,7 @@ class Hyperopt:
         # interesting -- consider it as 'bad' (assigned max. loss value)
         # in order to cast this hyperspace point away from optimization
         # path. We do not want to optimize 'hodl' strategies.
+
         if trade_count < self.config['hyperopt_min_trades']:
             return {
                 'loss': MAX_LOSS,
@@ -322,7 +323,7 @@ class Hyperopt:
             'total_profit': total_profit,
         }
 
-    def format_results(self, results: DataFrame) -> str:
+    def format_results(self, results: DataFrame, params: Dict[str, Any]) -> str:
         """
         Return the formatted results explanation in a string
         """
@@ -336,7 +337,8 @@ class Hyperopt:
         return (f'{trades:6d} trades. Avg profit {avg_profit: 5.2f}%. '
                 f'Total profit {total_profit: 11.8f} {stake_cur} '
                 f'({profit: 7.2f}\N{GREEK CAPITAL LETTER SIGMA}%). '
-                f'Avg duration {duration:5.1f} mins.'
+                f'Avg duration {duration:5.1f} mins.\n'
+                f'Params: {params}.\n'
                 ).encode(locale.getpreferredencoding(), 'replace').decode('utf-8')
 
     def get_optimizer(self, dimensions, cpu_count) -> Optimizer:
@@ -405,30 +407,32 @@ class Hyperopt:
         config_jobs = self.config.get('hyperopt_jobs', -1)
         logger.info(f'Number of parallel jobs set as: {config_jobs}')
 
-        self.dimensions = self.hyperopt_space()
-        self.opt = self.get_optimizer(self.dimensions, config_jobs)
-
-        if self.config.get('print_colorized', False):
-            colorama_init(autoreset=True)
-
         try:
-            with Parallel(n_jobs=config_jobs) as parallel:
-                jobs = parallel._effective_n_jobs()
-                logger.info(f'Effective number of parallel workers used: {jobs}')
-                EVALS = max(self.total_epochs // jobs, 1)
-                for i in range(EVALS):
-                    asked = self.opt.ask(n_points=jobs)
-                    f_val = self.run_optimizer_parallel(parallel, asked, i)
-                    self.opt.tell(asked, [v['loss'] for v in f_val])
-                    self.fix_optimizer_models_list()
-                    for j in range(jobs):
-                        current = i * jobs + j
-                        val = f_val[j]
-                        val['current_epoch'] = current
-                        val['is_initial_point'] = current < INITIAL_POINTS
-                        self.log_results(val)
-                        self.trials.append(val)
-                        logger.debug(f"Optimizer epoch evaluated: {val}")
+            for i in range(100):
+                self.dimensions = self.hyperopt_space()
+                self.opt = self.get_optimizer(self.dimensions, config_jobs)
+
+                if self.config.get('print_colorized', False):
+                    colorama_init(autoreset=True)
+
+                
+                    with Parallel(n_jobs=config_jobs) as parallel:
+                        jobs = parallel._effective_n_jobs()
+                        logger.info(f'Effective number of parallel workers used: {jobs}')
+                        EVALS = max(self.total_epochs // jobs, 1)
+                        for i in range(EVALS):
+                            asked = self.opt.ask(n_points=jobs)
+                            f_val = self.run_optimizer_parallel(parallel, asked, i)
+                            self.opt.tell(asked, [v['loss'] for v in f_val])
+                            self.fix_optimizer_models_list()
+                            for j in range(jobs):
+                                current = i * jobs + j
+                                val = f_val[j]
+                                val['current_epoch'] = current
+                                val['is_initial_point'] = current < INITIAL_POINTS
+                                self.log_results(val)
+                                self.trials.append(val)
+                                logger.debug(f"Optimizer epoch evaluated: {val}")
         except KeyboardInterrupt:
             print('User interrupted..')
 
