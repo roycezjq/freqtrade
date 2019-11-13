@@ -27,6 +27,7 @@ class VolumePairList(IPairList):
         self._number_pairs = self._whitelistconf['number_assets']
         self._sort_key = self._whitelistconf.get('sort_key', 'quoteVolume')
         self._precision_filter = self._whitelistconf.get('precision_filter', False)
+        self._volume_filter = self._whitelistconf.get('volume_filter', False)
 
         if not self._freqtrade.exchange.exchange_has('fetchTickers'):
             raise OperationalException(
@@ -71,12 +72,13 @@ class VolumePairList(IPairList):
                    if (len(k.split('/')) == 2 and k.split('/')[1] == base_currency
                        and v[key] is not None)]
         sorted_tickers = sorted(tickers, reverse=True, key=lambda t: t[key])
+
+
         # Validate whitelist to only have active market pairs
         valid_pairs = self._validate_whitelist([s['symbol'] for s in sorted_tickers])
         valid_tickers = [t for t in sorted_tickers if t["symbol"] in valid_pairs]
 
         if self._freqtrade.strategy.stoploss is not None and self._precision_filter:
-
             stop_prices = [self._freqtrade.get_target_bid(t["symbol"], t)
                            * (1 - abs(self._freqtrade.strategy.stoploss)) for t in valid_tickers]
             rates = [sp * 0.99 for sp in stop_prices]
@@ -89,6 +91,17 @@ class VolumePairList(IPairList):
                     logger.info(f"Removed {t['symbol']} from whitelist, "
                                 f"because stop price {sp} would be <= stop limit {r}")
                     valid_tickers.remove(t)
+
+        if self._freqtrade.strategy.minvolume is not None and self._volume_filter:
+            minv = self._freqtrade.strategy.minvolume
+            for i, t in enumerate(valid_tickers):
+                qv = t['quoteVolume']
+                logger.debug(f"{t['symbol']} - {sp} : {r}")
+                if qv <= minv:
+                    logger.info(f"Removed {t['symbol']} from whitelist, "
+                                f"because quoteVolume {qv} would be <= threshold {minv}")
+                    valid_tickers.remove(t)
+
 
         pairs = [s['symbol'] for s in valid_tickers]
         logger.info(f"Searching pairs: {pairs[:self._number_pairs]}")

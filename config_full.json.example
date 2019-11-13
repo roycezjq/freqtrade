@@ -17,6 +17,7 @@
         "0":  0.04
     },
     "stoploss": -0.10,
+    "minvolume": 50,
     "unfilledtimeout": {
         "buy": 10,
         "sell": 30
@@ -55,7 +56,8 @@
         "config": {
             "number_assets": 20,
             "sort_key": "quoteVolume",
-            "precision_filter": false
+            "precision_filter": false,
+            "volume_filter": false
         }
     },
     "exchange": {
