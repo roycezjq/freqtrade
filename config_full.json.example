@@ -18,6 +18,7 @@
     },
     "stoploss": -0.10,
     "minvolume": 50,
+    "minprice": 0.00000150
     "unfilledtimeout": {
         "buy": 10,
         "sell": 30

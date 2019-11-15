@@ -93,17 +93,17 @@ class VolumePairList(IPairList):
                 r = self._freqtrade.exchange.symbol_price_prec(t["symbol"], rates[i])
                 logger.debug(f"{t['symbol']} - {sp} : {r}")
                 if sp <= r:
-                    logger.info(f"Removed {t['symbol']} from whitelist, "
-                                f"because stop price {sp} would be <= stop limit {r}")
+                    logger.info("Removed %s from whitelist, because stop price %.8f would be <= stop limit %.8f" % (t['symbol'], sp, r))
                     unwanted_pairs.append(t['symbol'])
 
         if self._freqtrade.strategy.minvolume is not None and self._volume_filter:
             minv = self._freqtrade.strategy.minvolume
             for i, t in enumerate(valid_tickers):
-                qv = t['quoteVolume']
+                qv = float(t['quoteVolume'])
+                logger.debug(f"{t['symbol']} - {qv} : {minv}")
+
                 if qv <= minv:
-                    logger.info(f"Removed {t['symbol']} from whitelist, "
-                                f"because quoteVolume {qv} would be <= threshold {minv}")
+                    logger.info(f"Removed {t['symbol']} from whitelist because quoteVolume {qv:10.10} would be <= threshold {minv}")
                     unwanted_pairs.append(t['symbol'])
 
         
@@ -113,11 +113,9 @@ class VolumePairList(IPairList):
                 pairInfo = t['info']
                 avgWPrice = float(pairInfo['weightedAvgPrice'])
                 if avgWPrice <= minp:
-                    logger.info(f"Removed {t['symbol']} from whitelist, "
-                                f"because weightedAvgPrice {avgWPrice} would be <= threshold {minp}")
+                    logger.info("Removed %s from whitelist, because weightedAvgPrice %.8f would be <= threshold %.8f" % (t['symbol'], avgWPrice, minp))
                     unwanted_pairs.append(t['symbol'])
-                    
-
+               
         pairs = [s['symbol'] for s in valid_tickers]
       
         filtered_pairs = [x for x in pairs if x not in unwanted_pairs]
