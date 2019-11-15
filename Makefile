@@ -29,3 +29,19 @@ backtest2:
 
 data:
 	./.env/bin/freqtrade download-data --exchange binance --days 120 --timeframes 5m
+
+
+stop-svc:
+	systemctl --user stop freqtrade.service
+
+disable-svc:
+	systemctl --user disable freqtrade.service
+
+enable-svc:
+	systemctl --user enable freqtrade.service
+
+start-svc:
+	systemctl --user start freqtrade.service
+
+show-logs:
+	tail -f -n 100 /var/log/syslog
