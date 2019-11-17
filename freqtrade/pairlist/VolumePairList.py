@@ -29,6 +29,8 @@ class VolumePairList(IPairList):
         self._precision_filter = self._whitelistconf.get('precision_filter', False)
         self._volume_filter = self._whitelistconf.get('volume_filter', False)
         self._price_filter = self._whitelistconf.get('price_filter', False)
+        self._volume_filter_value = self._whitelistconf.get('volume_filter_value', 50.0)
+        self._price_filter_value = self._whitelistconf.get('price_filter_value', 0.00000050)
         
 
         if not self._freqtrade.exchange.exchange_has('fetchTickers'):
@@ -96,8 +98,8 @@ class VolumePairList(IPairList):
                     logger.info("Removed %s from whitelist, because stop price %.8f would be <= stop limit %.8f" % (t['symbol'], sp, r))
                     unwanted_pairs.append(t['symbol'])
 
-        if self._freqtrade.strategy.minvolume is not None and self._volume_filter:
-            minv = self._freqtrade.strategy.minvolume
+        if self._volume_filter_value is not None and self._volume_filter:
+            minv = self._volume_filter_value
             for i, t in enumerate(valid_tickers):
                 qv = float(t['quoteVolume'])
                 logger.debug(f"{t['symbol']} - {qv} : {minv}")
@@ -107,8 +109,8 @@ class VolumePairList(IPairList):
                     unwanted_pairs.append(t['symbol'])
 
         
-        if self._freqtrade.strategy.minprice is not None and self._price_filter:
-            minp = self._freqtrade.strategy.minprice
+        if self._price_filter_value is not None and self._price_filter:
+            minp = self._price_filter_value
             for i, t in enumerate(valid_tickers):
                 pairInfo = t['info']
                 avgWPrice = float(pairInfo['weightedAvgPrice'])
