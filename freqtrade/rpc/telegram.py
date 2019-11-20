@@ -82,6 +82,9 @@ class Telegram(RPC):
 
         # Register command handler and start telegram message polling
         handles = [
+
+            CommandHandler('autoban', self._autoban),
+            CommandHandler('trades', self._trades),
             CommandHandler('status', self._status),
             CommandHandler('profit', self._profit),
             CommandHandler('balance', self._balance),
@@ -175,6 +178,28 @@ class Telegram(RPC):
             raise NotImplementedError('Unknown message type: {}'.format(msg['type']))
 
         self._send_msg(message)
+
+    @authorized_only
+    def _autoban(self, update: Update, context: CallbackContext) -> None:
+        try:
+            results = self._rpc_trade_status()
+
+            messages = []
+            
+            messages.append("Autobanning...")
+
+            for msg in messages:
+                self._send_msg(msg)
+
+        except RPCException as e:
+            self._send_msg(str(e))
+
+
+    @authorized_only
+    def _trades(self, update: Update, context: CallbackContext) -> None:
+        self._status_table(update, context)
+        return
+
 
     @authorized_only
     def _status(self, update: Update, context: CallbackContext) -> None:
@@ -647,7 +672,7 @@ class Telegram(RPC):
 
         keyboard = [
             ['/daily', '/weekly', '/monthly'],
-            ['/trades', '/whitelist', '/blacklist'],
+            ['/status table', '/whitelist', '/blacklist'],
             ['/autoban', '/start', '/stop']
         ]
 
