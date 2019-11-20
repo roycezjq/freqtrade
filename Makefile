@@ -2,36 +2,53 @@ install:
 	./setup.sh --install
 
 run:
-	./.env/bin/freqtrade trade --strategy Strategy
+	./.env/bin/freqtrade trade --strategy Strategy1M
+
+refresh-and-train: data train
 
 train:
 	./.env/bin/freqtrade hyperopt \
 	-c config.json \
 	--hyperopt StrategyHyperOpt \
-	--strategy Strategy \
+	--strategy Strategy1M \
 	-e 8000 \
-	--spaces buy \
+	-j 10 \
+	--spaces stoploss \
 	--ticker-interval 1m \
+	--timerange 20191111- \
 	--print-all \
-	--timerange 20191008- \
 	--min-trades 50
 
 backtest:
 	./.env/bin/freqtrade backtesting \
-	--strategy-list Strategy  \
-	--ticker-interval 5m \
-	--timerange 20191001- \
+	--strategy-list Strategy1M  \
+	--ticker-interval 1m \
 	--export trades
 
-backtest2:
+backtest-14day:
 	./.env/bin/freqtrade backtesting \
 	--strategy-list Strategy  \
-	--ticker-interval 5m \
-	--timerange 20191001- \
+	--ticker-interval 1m \
+	--timerange 20191104- \
+	--export trades
+
+
+backtest-7day:
+	./.env/bin/freqtrade backtesting \
+	--strategy-list Strategy  \
+	--ticker-interval 1m \
+	--timerange 20191111- \
+	--export trades
+
+backtest-1day:
+	./.env/bin/freqtrade backtesting \
+	--strategy-list Strategy  \
+	--ticker-interval 1m \
+	--timerange 20191117- \
 	--export trades
 
 data:
-	./.env/bin/freqtrade download-data --exchange binance --days 120 --timeframes 5m 1m
+	./.env/bin/freqtrade download-data --exchange binance --days 60 --timeframes 1m
 
 
 stop-svc:
@@ -45,6 +62,8 @@ enable-svc:
 
 start-svc:
 	systemctl --user start freqtrade.service
+
+restart: stop-svc start-svc
 
 show-logs:
 	tail -f -n 100 /var/log/syslog
