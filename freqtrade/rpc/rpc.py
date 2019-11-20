@@ -152,7 +152,7 @@ class RPC:
             columns = ['ID', 'Pair', 'Since', profitcol]
             return trades_list, columns
 
-    def _rpc_daily_profit(
+    def _rpc_profit_statistics(
             self, timescale: int,
             stake_currency: str, fiat_display_currency: str) -> List[List[Any]]:
         today = datetime.utcnow().date()
@@ -160,6 +160,7 @@ class RPC:
 
         if not (isinstance(timescale, int) and timescale > 0):
             raise RPCException('timescale must be an integer greater than 0')
+
 
         for day in range(0, timescale):
             profitday = today - timedelta(days=day)
@@ -438,12 +439,14 @@ class RPC:
         else:
             return None
 
-    def _rpc_performance(self) -> List[Dict[str, Any]]:
+    def _rpc_performance(self, timescale: int) -> List[Dict[str, Any]]:
         """
         Handler for performance.
         Shows a performance statistic from finished trades
         """
-        pair_rates = Trade.get_overall_performance()
+        
+        pair_rates = Trade.get_overall_performance() if timescale is None else Trade.get_daily_performance(timescale)
+
         # Round and convert to %
         [x.update({'profit': round(x['profit'] * 100, 2)}) for x in pair_rates]
         return pair_rates

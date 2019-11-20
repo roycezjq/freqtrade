@@ -2,7 +2,7 @@
 This module contains the class to persist trades into SQLite
 """
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -457,6 +457,34 @@ class Trade(_DECL_BASE):
             }
             for pair, rate, count in pair_rates
         ]
+
+    @staticmethod
+    def get_daily_performance(timescale: int) -> List[Dict[str, Any]]:
+        """
+        Returns List of dicts containing Trades, including profit and trade count for given timescale
+        """
+
+        today = datetime.utcnow().date()
+
+        profitday = today - timedelta(hours=timescale*24) if timescale > 1 else today - timedelta(hours=24)
+
+        pair_rates = Trade.session.query(
+            Trade.pair,
+            func.sum(Trade.close_profit).label('profit_sum'),
+            func.count(Trade.pair).label('count')
+        ).filter(Trade.close_date >= profitday).filter(Trade.is_open.is_(False)) \
+        .group_by(Trade.pair) \
+        .order_by(desc('profit_sum')).all()
+
+        return [
+            {
+                'pair': pair,
+                'profit': rate,
+                'count': count
+            }
+            for pair, rate, count in pair_rates
+        ]
+
 
     @staticmethod
     def get_best_pair():

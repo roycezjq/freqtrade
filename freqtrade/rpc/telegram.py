@@ -5,7 +5,6 @@ This module manage Telegram communication
 """
 import logging
 from typing import Any, Callable, Dict
-
 from tabulate import tabulate
 from telegram import ParseMode, ReplyKeyboardMarkup, Update
 from telegram.error import NetworkError, TelegramError
@@ -14,7 +13,6 @@ from telegram.ext import CommandHandler, Updater, CallbackContext
 from freqtrade.__init__ import __version__
 from freqtrade.rpc import RPC, RPCException, RPCMessageType
 from freqtrade.rpc.fiat_convert import CryptoToFiatConverter
-
 logger = logging.getLogger(__name__)
 
 logger.debug('Included module rpc.telegram ...')
@@ -93,6 +91,9 @@ class Telegram(RPC):
             CommandHandler('forcebuy', self._forcebuy),
             CommandHandler('performance', self._performance),
             CommandHandler('daily', self._daily),
+            CommandHandler('weekly', self._weekly),
+            CommandHandler('monthly', self._monthly),
+            CommandHandler('statistics', self._statistics),
             CommandHandler('count', self._count),
             CommandHandler('reload_conf', self._reload_conf),
             CommandHandler('stopbuy', self._stopbuy),
@@ -241,11 +242,62 @@ class Telegram(RPC):
         except RPCException as e:
             self._send_msg(str(e))
 
+
+    @authorized_only
+    def _statistics(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /statistics <n>
+        Returns profit statistics (in BTC) over the last n days.
+        :param bot: telegram bot
+        :param update: message update
+        :return: None
+        """
+
+        try:
+            timescale = int(context.args[0])
+        except (TypeError, ValueError, IndexError):
+            timescale = 1
+
+        self._send_statistics(update, context, timescale)
+
+
     @authorized_only
     def _daily(self, update: Update, context: CallbackContext) -> None:
         """
-        Handler for /daily <n>
-        Returns a daily profit (in BTC) over the last n days.
+        Handler for /daily
+        Returns daily statistics over the last 24 hours
+        :param bot: telegram bot
+        :param update: message update
+        :return: None
+        """
+        self._send_statistics(update, context, 1)
+
+    @authorized_only
+    def _weekly(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /weekly
+        Returns weekly statistics over the last 7 days
+        :param bot: telegram bot
+        :param update: message update
+        :return: None
+        """
+        self._send_statistics(update, context, 7)
+
+    @authorized_only
+    def _monthly(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /monthly
+        Returns monthly statistics over the last 30 days
+        :param bot: telegram bot
+        :param update: message update
+        :return: None
+        """
+        self._send_statistics(update, context, 30)
+
+    @authorized_only
+    def _send_statistics(self, update: Update, context: CallbackContext, timescale: int) -> None:
+        """
+        Worker method for daily, weekly and monthly statistics calls
         :param bot: telegram bot
         :param update: message update
         :return: None
@@ -253,11 +305,7 @@ class Telegram(RPC):
         stake_cur = self._config['stake_currency']
         fiat_disp_cur = self._config.get('fiat_display_currency', '')
         try:
-            timescale = int(context.args[0])
-        except (TypeError, ValueError, IndexError):
-            timescale = 7
-        try:
-            stats = self._rpc_daily_profit(
+            stats = self._rpc_profit_statistics(
                 timescale,
                 stake_cur,
                 fiat_disp_cur
@@ -270,10 +318,22 @@ class Telegram(RPC):
                                      f'Trades'
                                  ],
                                  tablefmt='simple')
-            message = f'<b>Daily Profit over the last {timescale} days</b>:\n<pre>{stats_tab}</pre>'
+            message = f'<b>Statistics over the last {timescale*24} hours</b>:\n\n<pre>{stats_tab}</pre>'
+
+            trades = self._rpc_performance(timescale)
+            stats = '\n'.join('{index}.\t<code>{pair}\t{profit:.2f}% ({count})</code>'.format(
+                index=i + 1,
+                pair=trade['pair'],
+                profit=trade['profit'],
+                count=trade['count']
+            ) for i, trade in enumerate(trades))
+            message += '\n\n<b>Pair Performance:</b>\n\n{}'.format(stats)
+
             self._send_msg(message, parse_mode=ParseMode.HTML)
         except RPCException as e:
             self._send_msg(str(e))
+
+
 
     @authorized_only
     def _profit(self, update: Update, context: CallbackContext) -> None:
@@ -443,7 +503,13 @@ class Telegram(RPC):
         :return: None
         """
         try:
-            trades = self._rpc_performance()
+            timescale = int(context.args[0])
+        except (TypeError, ValueError, IndexError):
+            timescale = 30
+
+
+        try:
+            trades = self._rpc_performance(timescale)
             stats = '\n'.join('{index}.\t<code>{pair}\t{profit:.2f}% ({count})</code>'.format(
                 index=i + 1,
                 pair=trade['pair'],
@@ -579,9 +645,11 @@ class Telegram(RPC):
         :return: None
         """
 
-        keyboard = [['/daily', '/profit', '/balance'],
-                    ['/status', '/status table', '/performance'],
-                    ['/count', '/start', '/stop', '/help']]
+        keyboard = [
+            ['/daily', '/weekly', '/monthly'],
+            ['/trades', '/whitelist', '/blacklist'],
+            ['/autoban', '/start', '/stop']
+        ]
 
         reply_markup = ReplyKeyboardMarkup(keyboard)
 
