@@ -23,6 +23,7 @@ from freqtrade.persistence import Trade
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.state import RunMode
 from freqtrade.strategy.interface import IStrategy, SellType
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -442,61 +443,93 @@ class Backtesting:
         logger.info('Using stake_currency: %s ...', self.config['stake_currency'])
         logger.info('Using stake_amount: %s ...', self.config['stake_amount'])
         # Use max_open_trades in backtesting, except --disable-max-market-positions is set
+
+        suggest_pairlist = self.config.get('autosuggest_pairlist', False)
+
+
         if self.config.get('use_max_market_positions', True):
             max_open_trades = self.config['max_open_trades']
         else:
             logger.info('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
             max_open_trades = 0
 
-        data, timerange = self.load_bt_data()
 
-        all_results = {}
-        for strat in self.strategylist:
-            logger.info("Running backtesting for Strategy %s", strat.get_strategy_name())
-            self._set_strategy(strat)
+        badcount = 999999
+        new_whitelist = None
+        while(badcount > 0):
+            badcount = 0
+            data, timerange = self.load_bt_data()
 
-            # need to reprocess data every time to populate signals
-            preprocessed = self.strategy.tickerdata_to_dataframe(data)
+            new_whitelist = []
+            all_results = {}
+            for strat in self.strategylist:
+                logger.info("Running backtesting for Strategy %s", strat.get_strategy_name())
+                self._set_strategy(strat)
 
-            # Trim startup period from analyzed dataframe
-            for pair, df in preprocessed.items():
-                preprocessed[pair] = history.trim_dataframe(df, timerange)
-            min_date, max_date = history.get_timeframe(preprocessed)
+                # need to reprocess data every time to populate signals
+                preprocessed = self.strategy.tickerdata_to_dataframe(data)
 
-            logger.info(
-                'Backtesting with data from %s up to %s (%s days)..',
-                min_date.isoformat(), max_date.isoformat(), (max_date - min_date).days
-            )
-            # Execute backtest and print results
-            all_results[self.strategy.get_strategy_name()] = self.backtest(
-                {
-                    'stake_amount': self.config.get('stake_amount'),
-                    'processed': preprocessed,
-                    'max_open_trades': max_open_trades,
-                    'position_stacking': self.config.get('position_stacking', False),
-                    'start_date': min_date,
-                    'end_date': max_date,
-                }
-            )
+                # Trim startup period from analyzed dataframe
+                for pair, df in preprocessed.items():
+                    preprocessed[pair] = history.trim_dataframe(df, timerange)
+                min_date, max_date = history.get_timeframe(preprocessed)
 
-        for strategy, results in all_results.items():
+                logger.info(
+                    'Backtesting with data from %s up to %s (%s days)..',
+                    min_date.isoformat(), max_date.isoformat(), (max_date - min_date).days
+                )
+                # Execute backtest and print results
+                all_results[self.strategy.get_strategy_name()] = self.backtest(
+                    {
+                        'stake_amount': self.config.get('stake_amount'),
+                        'processed': preprocessed,
+                        'max_open_trades': max_open_trades,
+                        'position_stacking': self.config.get('position_stacking', False),
+                        'start_date': min_date,
+                        'end_date': max_date,
+                    }
+                )
 
-            if self.config.get('export', False):
-                self._store_backtest_result(Path(self.config['exportfilename']), results,
-                                            strategy if len(self.strategylist) > 1 else None)
+            for strategy, results in all_results.items():
 
-            print(f"Result for strategy {strategy}")
-            print(' BACKTESTING REPORT '.center(133, '='))
-            print(self._generate_text_table(data, results))
+                if self.config.get('export', False):
+                    self._store_backtest_result(Path(self.config['exportfilename']), results,
+                                                strategy if len(self.strategylist) > 1 else None)
 
-            print(' SELL REASON STATS '.center(133, '='))
-            print(self._generate_text_table_sell_reason(data, results))
+                print(f"Result for strategy {strategy}")
+                print(' BACKTESTING REPORT '.center(133, '='))
+                print(self._generate_text_table(data, results))
 
-            print(' LEFT OPEN TRADES REPORT '.center(133, '='))
-            print(self._generate_text_table(data, results.loc[results.open_at_end], True))
-            print()
-        if len(all_results) > 1:
-            # Print Strategy summary table
-            print(' Strategy Summary '.center(133, '='))
-            print(self._generate_text_table_strategy(all_results))
-            print('\nFor more details, please look at the detail tables above')
+                print(' SELL REASON STATS '.center(133, '='))
+                print(self._generate_text_table_sell_reason(data, results))
+
+                print(' LEFT OPEN TRADES REPORT '.center(133, '='))
+                print(self._generate_text_table(data, results.loc[results.open_at_end], True))
+                print()
+            if len(all_results) > 1:
+                # Print Strategy summary table
+                print(' Strategy Summary '.center(133, '='))
+                print(self._generate_text_table_strategy(all_results))
+                print('\nFor more details, please look at the detail tables above')
+
+
+            skip_nan = False
+            if suggest_pairlist:
+                pairs = self.config['exchange']['pair_whitelist']
+
+                for pair in pairs:
+                    result = results[results.pair == pair]
+                    if skip_nan and result.profit_abs.isnull().all():
+                        continue
+
+                    dd = result.profit_percent.sum() * 100.0
+                    if dd > 0:
+                        new_whitelist.append(pair)
+                    else:
+                        badcount = badcount + 1
+
+                self.config['exchange']['pair_whitelist'] = new_whitelist
+
+        if suggest_pairlist:
+            print("Suggested new whitelist:")
+            print(json.dumps(new_whitelist))
