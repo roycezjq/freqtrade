@@ -105,18 +105,4 @@ class VolumePairList(IPairList):
         pairs = pairs[:self._number_pairs]
         logger.info(f"Searching {self._number_pairs} pairs: {pairs}")
 
-        
-        if self._price_filter_value is not None and self._price_filter:
-            minp = self._price_filter_value
-            for i, t in enumerate(valid_tickers):
-                pairInfo = t['info']
-                avgWPrice = float(pairInfo['weightedAvgPrice'])
-                if avgWPrice <= minp:
-                    logger.info("Removed %s from whitelist, because weightedAvgPrice %.8f would be <= threshold %.8f" % (t['symbol'], avgWPrice, minp))
-                    unwanted_pairs.append(t['symbol'])
-               
-        pairs = [s['symbol'] for s in valid_tickers]
-      
-        filtered_pairs = [x for x in pairs if x not in unwanted_pairs]
-        logger.info(f"Searching pairs: {filtered_pairs[:self._number_pairs]}")
-        return filtered_pairs
+        return pairs
