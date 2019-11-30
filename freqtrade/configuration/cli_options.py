@@ -238,6 +238,14 @@ AVAILABLE_CLI_OPTIONS = {
         metavar='INT',
         default=1,
     ),
+    "hyperopt_max_duration": Arg(
+        '--max-duration',
+        help="Set maximum duration for evaluations in the hyperopt "
+        "optimization path (default: None).",
+        type=check_int_positive,
+        metavar='INT',
+        default=None,
+    ),
     "hyperopt_continue": Arg(
         "--continue",
         help="Continue hyperopt from previous runs. "

@@ -316,12 +316,22 @@ class Hyperopt:
 
         trade_count = len(results.index)
         total_profit = results.profit_abs.sum()
+        duration = results.trade_duration.mean()
 
         # If this evaluation contains too short amount of trades to be
         # interesting -- consider it as 'bad' (assigned max. loss value)
         # in order to cast this hyperspace point away from optimization
         # path. We do not want to optimize 'hodl' strategies.
         if trade_count < self.config['hyperopt_min_trades']:
+            return {
+                'loss': MAX_LOSS,
+                'params': params,
+                'results_explanation': results_explanation,
+                'total_profit': total_profit,
+            }
+
+        # If the duration is more than this value, throw it away.
+        if self.config['hyperopt_max_duration'] is not None and duration < self.config['hyperopt_max_duration']:
             return {
                 'loss': MAX_LOSS,
                 'params': params,

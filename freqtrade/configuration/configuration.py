@@ -298,6 +298,10 @@ class Configuration:
         self._args_to_config(config, argname='hyperopt_min_trades',
                              logstring='Parameter --min-trades detected: {}')
 
+        self._args_to_config(config, argname='hyperopt_max_duration',
+                             logstring='Parameter --max-duration detected: {}')
+
+
         self._args_to_config(config, argname='hyperopt_continue',
                              logstring='Hyperopt continue: {}')
 
