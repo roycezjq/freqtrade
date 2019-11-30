@@ -6,6 +6,7 @@ Provides lists as configured in config.json
  """
 from cachetools import TTLCache, cached
 import logging
+import json
 from typing import Dict, List
 
 from freqtrade import OperationalException
@@ -91,5 +92,7 @@ class PairListManager():
 
         # Validation against blacklist happens after the pairlists to ensure blacklist is respected.
         pairlist = IPairList.verify_blacklist(pairlist, self.blacklist)
+
+        logger.info(f"Active pairlist: {json.dumps(pairlist)}")
 
         self._whitelist = pairlist
