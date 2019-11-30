@@ -122,6 +122,12 @@ AVAILABLE_CLI_OPTIONS = {
         action='store_true',
         default=False,
     ),
+    "autosuggest_pairlist": Arg(
+        '--pairlist', '--autosuggest_pairlist',
+        help='Suggest a new pairlist at the end of backtesting by eliminating pairs that lose money.',
+        action='store_true',
+        default=False,
+    ),
     "use_max_market_positions": Arg(
         '--dmmp', '--disable-max-market-positions',
         help='Disable applying `max_open_trades` during backtest '

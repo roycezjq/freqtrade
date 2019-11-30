@@ -19,9 +19,10 @@ ARGS_COMMON_OPTIMIZE = ["ticker_interval", "timerange",
                         "max_open_trades", "stake_amount", "fee"]
 
 ARGS_BACKTEST = ARGS_COMMON_OPTIMIZE + ["position_stacking", "use_max_market_positions",
+                                        "autosuggest_pairlist",
                                         "strategy_list", "export", "exportfilename"]
 
-ARGS_HYPEROPT = ARGS_COMMON_OPTIMIZE + ["hyperopt", "hyperopt_path",
+ARGS_HYPEROPT = ARGS_COMMON_OPTIMIZE + ["hyperopt", "hyperopt_path", "autosuggest_pairlist",
                                         "position_stacking", "epochs", "spaces",
                                         "use_max_market_positions", "print_all",
                                         "print_colorized", "print_json", "hyperopt_jobs",

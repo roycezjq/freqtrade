@@ -368,6 +368,7 @@ class Backtesting:
         stake_amount = args['stake_amount']
         max_open_trades = args.get('max_open_trades', 0)
         position_stacking = args.get('position_stacking', False)
+        autosuggest_whitelist = args.get('autosuggest_whitelist', False)
         start_date = args['start_date']
         end_date = args['end_date']
         trades = []
@@ -444,15 +445,13 @@ class Backtesting:
         logger.info('Using stake_amount: %s ...', self.config['stake_amount'])
         # Use max_open_trades in backtesting, except --disable-max-market-positions is set
 
-        suggest_pairlist = self.config.get('autosuggest_pairlist', False)
-
-
         if self.config.get('use_max_market_positions', True):
             max_open_trades = self.config['max_open_trades']
         else:
             logger.info('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
             max_open_trades = 0
 
+        suggest_pairlist = self.config.get("autosuggest_pairlist")    
 
         badcount = 999999
         new_whitelist = None

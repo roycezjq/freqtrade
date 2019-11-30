@@ -213,6 +213,10 @@ class Configuration:
         self._args_to_config(config, argname='position_stacking',
                              logstring='Parameter --enable-position-stacking detected ...')
 
+        self._args_to_config(config, argname='autosuggest_pairlist',
+                             logstring='Parameter --autosuggest_pairlist detected ...')
+
+
         # Setting max_open_trades to infinite if -1
         if config.get('max_open_trades') == -1:
             config['max_open_trades'] = float('inf')
