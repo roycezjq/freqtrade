@@ -358,7 +358,7 @@ class Hyperopt:
             }
 
         # If the duration is more than this value, throw it away.
-        if self.config['hyperopt_max_duration'] is not None and duration < self.config['hyperopt_max_duration']:
+        if self.config['hyperopt_max_duration'] is not None and duration > self.config['hyperopt_max_duration']:
             return {
                 'loss': MAX_LOSS,
                 'params': params,
@@ -368,7 +368,7 @@ class Hyperopt:
 
         loss = self.calculate_loss(results=results, trade_count=trade_count,
                                    min_date=min_date.datetime, max_date=max_date.datetime)
-
+       
         return {
             'loss': loss,
             'params': params,
