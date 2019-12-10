@@ -934,9 +934,32 @@ class FreqtradeBot:
             trade.update(order)
         Trade.session.flush()
 
-        # Lock pair for one candle to prevent immediate rebuys
-        self.strategy.lock_pair(trade.pair, timeframe_to_next_date(self.config['ticker_interval']))
+        if trade.calc_profit_percent(profit_rate) < 0.0:
+            # trade made a significant loss
+            loss_amount = trade.calc_profit_percent(profit_rate)
+            loss_multiplier = 1
+            if loss_amount < -5:
+                loss_multiplier = 5
+            elif loss_amount < -4:
+                loss_multiplier = 4
+            elif loss_amount < -3:
+                loss_multiplier = 3
+            elif loss_mount < -2:
+                loss_multiplier = 2
+            else
+                loss_multiplier = 1
 
+            # Lock pair for one candle to prevent immediate rebuys
+            locktime = "%dh" % loss_multiplier
+            locktime = timeframe_to_next_date(locktime)
+            logger.info("Locking pair %s until %s due to loss making trade", trade.pair, locktime)
+            self.strategy.lock_pair(trade.pair, locktime)
+        
+        else:
+            # Lock pair for one candle to prevent immediate rebuys
+            self.strategy.lock_pair(trade.pair, timeframe_to_next_date(self.config['ticker_interval']))
+
+            
         self._notify_sell(trade, ordertype)
 
     def _notify_sell(self, trade: Trade, order_type: str):
