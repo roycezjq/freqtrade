@@ -4,6 +4,7 @@
 This module contains the backtesting logic
 """
 import logging
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,6 @@ from freqtrade.persistence import Trade
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.state import RunMode
 from freqtrade.strategy.interface import IStrategy, SellType
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +368,6 @@ class Backtesting:
         stake_amount = args['stake_amount']
         max_open_trades = args.get('max_open_trades', 0)
         position_stacking = args.get('position_stacking', False)
-        autosuggest_whitelist = args.get('autosuggest_whitelist', False)
         start_date = args['start_date']
         end_date = args['end_date']
         trades = []

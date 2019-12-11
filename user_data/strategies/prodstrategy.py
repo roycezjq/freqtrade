@@ -7,17 +7,23 @@ from functools import reduce
 import talib.abstract as ta
 from freqtrade.strategy.interface import IStrategy
 from pandas import DataFrame
-
-def normalise(dataval, minval, maxval):
-        return (dataval - minval) / (maxval - minval)
-
+from freqtrade.persistence import Trade
+from datetime import timedelta, datetime, timezone
 
 class ProdStrategy(IStrategy):
     # tick-interval 5m
     # max-open-trades 3
-    EMA_SHORT_TERM = 22
-    EMA_MEDIUM_TERM = 50
-    EMA_LONG_TERM = 99
+
+    minimal_roi = {
+        "0": 0.02,
+        "55": 0.01,
+        "144": 0.005,
+        "233": 0.0
+    }
+
+    EMA_SHORT_TERM = 5
+    EMA_MEDIUM_TERM = 20
+    EMA_LONG_TERM = 50
 
     use_sell_signal = True
     sell_profit_only = True
@@ -27,27 +33,27 @@ class ProdStrategy(IStrategy):
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe['rsi'] = ta.RSI(dataframe)
-
-        # ADX
         dataframe['adx'] = ta.ADX(dataframe)
 
-        # Bollinger bands
         bollinger = qtpylib.bollinger_bands(qtpylib.typical_price(dataframe), window=40, stds=2)
 
-        dataframe['ema_{}'.format(self.EMA_SHORT_TERM)] = ta.EMA(
-            dataframe, timeperiod=self.EMA_SHORT_TERM
-        )
-        dataframe['ema_{}'.format(self.EMA_MEDIUM_TERM)] = ta.EMA(
-            dataframe, timeperiod=self.EMA_MEDIUM_TERM
-        )
-        dataframe['ema_{}'.format(self.EMA_LONG_TERM)] = ta.EMA(
-            dataframe, timeperiod=self.EMA_LONG_TERM
-        )
+        dataframe['ema_short'] = ta.EMA(dataframe, timeperiod=self.EMA_SHORT_TERM)
+        dataframe['ema_medium'] = ta.EMA(dataframe, timeperiod=self.EMA_MEDIUM_TERM)
+        dataframe['ema_long'] = ta.EMA(dataframe, timeperiod=self.EMA_LONG_TERM)
 
-        dataframe['min'] = ta.MIN(dataframe, timeperiod=self.EMA_MEDIUM_TERM)
-        dataframe['max'] = ta.MAX(dataframe, timeperiod=self.EMA_MEDIUM_TERM)
+        dataframe['rolling_volume_std'] = dataframe['volume'].rolling(window=120).std().shift(1)
+        dataframe['rolling_volume_mean'] = dataframe['volume'].rolling(window=120).mean().shift(1)
 
-        dataframe['rolling_volume'] = dataframe['volume'].rolling(window=30).mean().shift(1) * 20
+        dataframe['volume_plus_one'] = dataframe['rolling_volume_mean'] + (3 * dataframe['rolling_volume_std'])
+        dataframe['volume_minus_one'] = dataframe['rolling_volume_mean'] - (3 * dataframe['rolling_volume_std'])
+
+        dataframe['rolling_close_std'] = dataframe['close'].rolling(window=120).std().shift(1)
+        dataframe['rolling_close_mean'] = dataframe['close'].rolling(window=120).mean().shift(1)
+
+        dataframe['rolling_close_plus_one'] = dataframe['rolling_close_mean'] + (3 * dataframe['rolling_close_std'])
+        dataframe['rolling_close_minus_one'] = dataframe['rolling_close_mean'] - (3 * dataframe['rolling_close_std'])
+
+        dataframe['roc_120'] = dataframe['close'].pct_change(periods=120)
 
         dataframe['lower'] = np.nan_to_num(bollinger['lower'])
         dataframe['mid'] = np.nan_to_num(bollinger['mid'])
@@ -57,34 +63,46 @@ class ProdStrategy(IStrategy):
         dataframe['closedelta'] = (dataframe['close'] - dataframe['close'].shift()).abs()
         dataframe['tail'] = (dataframe['close'] - dataframe['low']).abs()
 
+        #Within populate indicators (or populate_buy):
+        if self.config['runmode'] in ('live', 'dry_run'):
+            # fetch trades for the last 2 days
+            trades = Trade.get_trades([Trade.pair == metadata['pair'],
+                                    Trade.open_date > datetime.utcnow() - timedelta(days=1),
+                                    Trade.is_open == False,
+                        ]).all()
+            # Analyze the conditions you'd like to lock the pair .... will probably be different for every strategy
+            sumprofit = sum(trade.close_profit for trade in trades)
+            if sumprofit < 0:
+                # Lock pair for 2 days
+                self.lock_pair(metadata['pair'], until=datetime.now(timezone.utc) + timedelta(days=1))
+
         return dataframe
 
     def populate_buy_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
 
-        condition1 = (
-            dataframe['lower'].shift().gt(0) &
-            dataframe['bbdelta'].gt(dataframe['close'] * 0.022) &
-            dataframe['closedelta'].gt(dataframe['close'] * 0.008) &
-            dataframe['tail'].lt(dataframe['bbdelta'] * 0.25) &
-            dataframe['close'].lt(dataframe['lower'].shift()) &
-            dataframe['close'].le(dataframe['close'].shift())
+        bbdelta = 0.013
+        closedelta = 0.004
+        tailval = 0.25
+
+        shouldBuy = (
+            (dataframe['lower'].shift().gt(0)) &
+            (dataframe['ema_medium'] < dataframe['ema_long']) &
+            (dataframe['bbdelta'].gt(dataframe['close'] * bbdelta)) &
+            (dataframe['closedelta'].gt(dataframe['close'] * closedelta)) &
+            (dataframe['tail'].lt(dataframe['bbdelta'] * tailval)) &
+            (dataframe['close'].lt(dataframe['lower'].shift())) &
+            (dataframe['close'].le(dataframe['close'].shift())) &
+            (dataframe['volume'] < dataframe['volume_plus_one']) &
+            (dataframe['close'] < dataframe['rolling_close_plus_one']) &                
+            (dataframe['roc_120'] < -0.05) &
+            (dataframe['rsi'] <= 40)
         )
 
-        condition2 = (
-            (dataframe['volume'] < dataframe['rolling_volume']) &
-            (dataframe['close'] < dataframe['ema_{}'.format(self.EMA_SHORT_TERM)]) &
-            (dataframe['close'] < dataframe['ema_{}'.format(self.EMA_MEDIUM_TERM)]) &
-            (dataframe['close'] == dataframe['min']) &
-            (dataframe['close'] <= 0.985 * dataframe['lower'])
-        )
-        #condition = (condition1|condition2)
-        condition = condition2
-
-        dataframe.loc[condition, 'buy'] = 1
+        dataframe.loc[shouldBuy, 'buy'] = 1
         return dataframe
 
     def populate_sell_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
 
-        dataframe['sell'] = 0
+        dataframe.loc['sell'] = 0
         
         return dataframe
