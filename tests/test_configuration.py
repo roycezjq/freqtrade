@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from jsonschema import Draft4Validator, ValidationError, validate
+from jsonschema import ValidationError
 
-from freqtrade import OperationalException, constants
+from freqtrade import OperationalException
 from freqtrade.configuration import (Arguments, Configuration, check_exchange,
                                      remove_credentials,
                                      validate_config_consistency)
@@ -718,7 +718,8 @@ def test_load_config_warn_forcebuy(default_conf, mocker, caplog) -> None:
 
 
 def test_validate_default_conf(default_conf) -> None:
-    validate(default_conf, constants.CONF_SCHEMA, Draft4Validator)
+    # Validate via our validator - we allow setting defaults!
+    validate_config_schema(default_conf)
 
 
 def test_validate_tsl(default_conf):
@@ -797,6 +798,12 @@ def test_validate_whitelist(default_conf):
     del conf['exchange']['pair_whitelist']
 
     validate_config_consistency(conf)
+
+    conf = deepcopy(default_conf)
+    conf['stake_currency'] = 'USDT'
+    with pytest.raises(OperationalException,
+                       match=r"Stake-currency 'USDT' not compatible with pair-whitelist.*"):
+        validate_config_consistency(conf)
 
 
 def test_load_config_test_comments() -> None:

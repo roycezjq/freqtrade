@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from random import choice, randint
 from string import ascii_uppercase
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import ANY, MagicMock, PropertyMock
 
 import arrow
 import pytest
@@ -462,7 +462,7 @@ def test_profit_handle(default_conf, update, ticker, ticker_sell_up, fee,
 
 
 def test_telegram_balance_handle(default_conf, update, mocker, rpc_balance, tickers) -> None:
-
+    default_conf['dry_run'] = False
     mocker.patch('freqtrade.exchange.Exchange.get_balances', return_value=rpc_balance)
     mocker.patch('freqtrade.exchange.Exchange.get_tickers', tickers)
     mocker.patch('freqtrade.exchange.Exchange.get_valid_pair_combination',
@@ -494,6 +494,7 @@ def test_telegram_balance_handle(default_conf, update, mocker, rpc_balance, tick
 
 
 def test_balance_handle_empty_response(default_conf, update, mocker) -> None:
+    default_conf['dry_run'] = False
     mocker.patch('freqtrade.exchange.Exchange.get_balances', return_value={})
 
     msg_mock = MagicMock()
@@ -533,7 +534,8 @@ def test_balance_handle_empty_response_dry(default_conf, update, mocker) -> None
     telegram._balance(update=update, context=MagicMock())
     result = msg_mock.call_args_list[0][0][0]
     assert msg_mock.call_count == 1
-    assert "Running in Dry Run, balances are not available." in result
+    assert "*Warning:*Simulated balances in Dry Mode." in result
+    assert "Starting capital: `1000` BTC" in result
 
 
 def test_balance_handle_too_large_response(default_conf, update, mocker) -> None:
@@ -736,7 +738,9 @@ def test_forcesell_handle(default_conf, update, ticker, fee,
         'profit_percent': 0.0611052,
         'stake_currency': 'BTC',
         'fiat_currency': 'USD',
-        'sell_reason': SellType.FORCE_SELL.value
+        'sell_reason': SellType.FORCE_SELL.value,
+        'open_date': ANY,
+        'close_date': ANY,
     } == last_msg
 
 
@@ -793,7 +797,9 @@ def test_forcesell_down_handle(default_conf, update, ticker, fee,
         'profit_percent': -0.05478342,
         'stake_currency': 'BTC',
         'fiat_currency': 'USD',
-        'sell_reason': SellType.FORCE_SELL.value
+        'sell_reason': SellType.FORCE_SELL.value,
+        'open_date': ANY,
+        'close_date': ANY,
     } == last_msg
 
 
@@ -839,7 +845,9 @@ def test_forcesell_all_handle(default_conf, update, ticker, fee, mocker) -> None
         'profit_percent': -0.00589291,
         'stake_currency': 'BTC',
         'fiat_currency': 'USD',
-        'sell_reason': SellType.FORCE_SELL.value
+        'sell_reason': SellType.FORCE_SELL.value,
+        'open_date': ANY,
+        'close_date': ANY,
     } == msg
 
 
@@ -1171,6 +1179,16 @@ def test_show_config_handle(default_conf, update, mocker) -> None:
     assert '*Mode:* `{}`'.format('Dry-run') in msg_mock.call_args_list[0][0][0]
     assert '*Exchange:* `bittrex`' in msg_mock.call_args_list[0][0][0]
     assert '*Strategy:* `DefaultStrategy`' in msg_mock.call_args_list[0][0][0]
+    assert '*Stoploss:* `-0.1`' in msg_mock.call_args_list[0][0][0]
+
+    msg_mock.reset_mock()
+    freqtradebot.config['trailing_stop'] = True
+    telegram._show_config(update=update, context=MagicMock())
+    assert msg_mock.call_count == 1
+    assert '*Mode:* `{}`'.format('Dry-run') in msg_mock.call_args_list[0][0][0]
+    assert '*Exchange:* `bittrex`' in msg_mock.call_args_list[0][0][0]
+    assert '*Strategy:* `DefaultStrategy`' in msg_mock.call_args_list[0][0][0]
+    assert '*Initial Stoploss:* `-0.1`' in msg_mock.call_args_list[0][0][0]
 
 
 def test_send_msg_buy_notification(default_conf, mocker) -> None:
@@ -1224,7 +1242,9 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
         'profit_percent': -0.57405275,
         'stake_currency': 'ETH',
         'fiat_currency': 'USD',
-        'sell_reason': SellType.STOP_LOSS.value
+        'sell_reason': SellType.STOP_LOSS.value,
+        'open_date': arrow.utcnow().shift(hours=-1),
+        'close_date': arrow.utcnow(),
     })
     assert msg_mock.call_args[0][0] \
         == ('*Binance:* Selling KEY/ETH\n'
@@ -1233,6 +1253,7 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
             '*Open Rate:* `0.00007500`\n'
             '*Current Rate:* `0.00003201`\n'
             '*Sell Reason:* `stop_loss`\n'
+            '*Duration:* `1:00:00 (60.0 min)`\n'
             '*Profit:* `-57.41%`` (loss: -0.05746268 ETH`` / -24.812 USD)`')
 
     msg_mock.reset_mock()
@@ -1249,7 +1270,9 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
         'profit_amount': -0.05746268,
         'profit_percent': -0.57405275,
         'stake_currency': 'ETH',
-        'sell_reason': SellType.STOP_LOSS.value
+        'sell_reason': SellType.STOP_LOSS.value,
+        'open_date': arrow.utcnow().shift(days=-1, hours=-2, minutes=-30),
+        'close_date': arrow.utcnow(),
     })
     assert msg_mock.call_args[0][0] \
         == ('*Binance:* Selling KEY/ETH\n'
@@ -1258,6 +1281,7 @@ def test_send_msg_sell_notification(default_conf, mocker) -> None:
             '*Open Rate:* `0.00007500`\n'
             '*Current Rate:* `0.00003201`\n'
             '*Sell Reason:* `stop_loss`\n'
+            '*Duration:* `1 day, 2:30:00 (1590.0 min)`\n'
             '*Profit:* `-57.41%`')
     # Reset singleton function to avoid random breaks
     telegram._fiat_converter.convert_amount = old_convamount
@@ -1377,7 +1401,9 @@ def test_send_msg_sell_notification_no_fiat(default_conf, mocker) -> None:
         'profit_percent': -0.57405275,
         'stake_currency': 'ETH',
         'fiat_currency': 'USD',
-        'sell_reason': SellType.STOP_LOSS.value
+        'sell_reason': SellType.STOP_LOSS.value,
+        'open_date': arrow.utcnow().shift(hours=-2, minutes=-35, seconds=-3),
+        'close_date': arrow.utcnow(),
     })
     assert msg_mock.call_args[0][0] \
         == '*Binance:* Selling KEY/ETH\n' \
@@ -1386,6 +1412,7 @@ def test_send_msg_sell_notification_no_fiat(default_conf, mocker) -> None:
            '*Open Rate:* `0.00007500`\n' \
            '*Current Rate:* `0.00003201`\n' \
            '*Sell Reason:* `stop_loss`\n' \
+           '*Duration:* `2:35:03 (155.1 min)`\n' \
            '*Profit:* `-57.41%`'
 
 
