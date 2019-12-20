@@ -40,7 +40,8 @@ backtest-7day:
 	./.env/bin/freqtrade backtesting \
 	--strategy-list ProdStrategy  \
 	--ticker-interval 5m \
-	--timerange 20191125- \
+	--timerange 20191215- \
+	--autosuggest_pairlist \
 	--export trades
 
 backtest-1day:
@@ -50,8 +51,16 @@ backtest-1day:
 	--timerange 20191117- \
 	--export trades
 
+plot:
+	./.env/bin/freqtrade plot-dataframe \
+	--strategy ProdStrategy  \
+	--ticker-interval 5m \
+	--timerange 20191215- \
+	--indicators2 pntchg
+	--export trades
+
 data:
-	./.env/bin/freqtrade download-data --exchange binance --days 60 --timeframes 1m 5m
+	./.env/bin/freqtrade download-data --exchange binance --days 60 --timeframes 5m
 
 
 stop-svc:
