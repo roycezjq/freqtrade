@@ -4,33 +4,55 @@
 This module contains the hyperopt logic
 """
 
-import json
+import locale
 import logging
-import os
-import pickle
-import signal
+import random
 import sys
-from argparse import Namespace
-from functools import reduce
-from math import exp
+import warnings
+from collections import OrderedDict
 from operator import itemgetter
-from typing import Dict, Any, Callable, Optional
+from pathlib import Path
+from pprint import pprint
+from typing import Any, Dict, List, Optional
 
-import numpy
-import talib.abstract as ta
-from hyperopt import STATUS_FAIL, STATUS_OK, Trials, fmin, hp, space_eval, tpe
+import rapidjson
+from colorama import Fore, Style
+from colorama import init as colorama_init
+from joblib import (Parallel, cpu_count, delayed, dump, load,
+                    wrap_non_picklable_objects)
 from pandas import DataFrame
 
-import freqtrade.vendor.qtpylib.indicators as qtpylib
-from freqtrade.arguments import Arguments
-from freqtrade.configuration import Configuration
-from freqtrade.optimize import load_data
+from freqtrade.data.converter import trim_dataframe
+from freqtrade.data.history import get_timerange
+from freqtrade.exceptions import OperationalException
+from freqtrade.misc import plural, round_dict
 from freqtrade.optimize.backtesting import Backtesting
+# Import IHyperOpt and IHyperOptLoss to allow unpickling classes from these modules
+from freqtrade.optimize.hyperopt_interface import IHyperOpt  # noqa: F401
+from freqtrade.optimize.hyperopt_loss_interface import IHyperOptLoss  # noqa: F401
+from freqtrade.resolvers.hyperopt_resolver import (HyperOptLossResolver,
+                                                   HyperOptResolver)
+
+# Suppress scikit-learn FutureWarnings from skopt
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    from skopt import Optimizer
+    from skopt.space import Dimension
+
 
 logger = logging.getLogger(__name__)
 
 
-class Hyperopt(Backtesting):
+INITIAL_POINTS = 30
+
+# Keep no more than 2*SKOPT_MODELS_MAX_NUM models
+# in the skopt models list
+SKOPT_MODELS_MAX_NUM = 10
+
+MAX_LOSS = 100000  # just a big enough number to be bad result in loss optimization
+
+
+class Hyperopt:
     """
     Hyperopt class, this class contains all the logic to run a hyperopt simulation
 
@@ -38,553 +60,503 @@ class Hyperopt(Backtesting):
     hyperopt = Hyperopt(config)
     hyperopt.start()
     """
+
     def __init__(self, config: Dict[str, Any]) -> None:
-        super().__init__(config)
-        # set TARGET_TRADES to suit your number concurrent trades so its realistic
-        # to the number of days
-        self.target_trades = 600
-        self.total_tries = config.get('epochs', 0)
-        self.current_tries = 0
+        self.config = config
+
+        self.backtesting = Backtesting(self.config)
+
+        self.custom_hyperopt = HyperOptResolver.load_hyperopt(self.config)
+
+        self.custom_hyperoptloss = HyperOptLossResolver.load_hyperoptloss(self.config)
+        self.calculate_loss = self.custom_hyperoptloss.hyperopt_loss_function
+
+        self.trials_file = (self.config['user_data_dir'] /
+                            'hyperopt_results' / 'hyperopt_results.pickle')
+        self.tickerdata_pickle = (self.config['user_data_dir'] /
+                                  'hyperopt_results' / 'hyperopt_tickerdata.pkl')
+        self.total_epochs = config.get('epochs', 0)
+
         self.current_best_loss = 100
 
-        # max average trade duration in minutes
-        # if eval ends with higher value, we consider it a failed eval
-        self.max_accepted_trade_duration = 300
+        if not self.config.get('hyperopt_continue'):
+            self.clean_hyperopt()
+        else:
+            logger.info("Continuing on previous hyperopt results.")
 
-        # this is expexted avg profit * expected trade count
-        # for example 3.5%, 1100 trades, self.expected_max_profit = 3.85
-        # check that the reported Σ% values do not exceed this!
-        self.expected_max_profit = 3.0
+        self.num_trials_saved = 0
 
-        # Configuration and data used by hyperopt
-        self.processed: Optional[Dict[str, Any]] = None
+        # Previous evaluations
+        self.trials: List = []
 
-        # Hyperopt Trials
-        self.trials_file = os.path.join('user_data', 'hyperopt_trials.pickle')
-        self.trials = Trials()
+        # Populate functions here (hasattr is slow so should not be run during "regular" operations)
+        if hasattr(self.custom_hyperopt, 'populate_indicators'):
+            self.backtesting.strategy.advise_indicators = \
+                self.custom_hyperopt.populate_indicators  # type: ignore
+        if hasattr(self.custom_hyperopt, 'populate_buy_trend'):
+            self.backtesting.strategy.advise_buy = \
+                self.custom_hyperopt.populate_buy_trend  # type: ignore
+        if hasattr(self.custom_hyperopt, 'populate_sell_trend'):
+            self.backtesting.strategy.advise_sell = \
+                self.custom_hyperopt.populate_sell_trend  # type: ignore
+
+        # Use max_open_trades for hyperopt as well, except --disable-max-market-positions is set
+        if self.config.get('use_max_market_positions', True):
+            self.max_open_trades = self.config['max_open_trades']
+        else:
+            logger.debug('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
+            self.max_open_trades = 0
+        self.position_stacking = self.config.get('position_stacking', False)
+
+        if self.has_space('sell'):
+            # Make sure use_sell_signal is enabled
+            if 'ask_strategy' not in self.config:
+                self.config['ask_strategy'] = {}
+            self.config['ask_strategy']['use_sell_signal'] = True
+
+        self.print_all = self.config.get('print_all', False)
+        self.print_colorized = self.config.get('print_colorized', False)
+        self.print_json = self.config.get('print_json', False)
 
     @staticmethod
-    def populate_indicators(dataframe: DataFrame) -> DataFrame:
-        """
-        Adds several different TA indicators to the given DataFrame
-        """
-        dataframe['adx'] = ta.ADX(dataframe)
-        dataframe['ao'] = qtpylib.awesome_oscillator(dataframe)
-        dataframe['cci'] = ta.CCI(dataframe)
-        macd = ta.MACD(dataframe)
-        dataframe['macd'] = macd['macd']
-        dataframe['macdsignal'] = macd['macdsignal']
-        dataframe['macdhist'] = macd['macdhist']
-        dataframe['mfi'] = ta.MFI(dataframe)
-        dataframe['minus_dm'] = ta.MINUS_DM(dataframe)
-        dataframe['minus_di'] = ta.MINUS_DI(dataframe)
-        dataframe['plus_dm'] = ta.PLUS_DM(dataframe)
-        dataframe['plus_di'] = ta.PLUS_DI(dataframe)
-        dataframe['roc'] = ta.ROC(dataframe)
-        dataframe['rsi'] = ta.RSI(dataframe)
-        # Inverse Fisher transform on RSI, values [-1.0, 1.0] (https://goo.gl/2JGGoy)
-        rsi = 0.1 * (dataframe['rsi'] - 50)
-        dataframe['fisher_rsi'] = (numpy.exp(2 * rsi) - 1) / (numpy.exp(2 * rsi) + 1)
-        # Inverse Fisher transform on RSI normalized, value [0.0, 100.0] (https://goo.gl/2JGGoy)
-        dataframe['fisher_rsi_norma'] = 50 * (dataframe['fisher_rsi'] + 1)
-        # Stoch
-        stoch = ta.STOCH(dataframe)
-        dataframe['slowd'] = stoch['slowd']
-        dataframe['slowk'] = stoch['slowk']
-        # Stoch fast
-        stoch_fast = ta.STOCHF(dataframe)
-        dataframe['fastd'] = stoch_fast['fastd']
-        dataframe['fastk'] = stoch_fast['fastk']
-        # Stoch RSI
-        stoch_rsi = ta.STOCHRSI(dataframe)
-        dataframe['fastd_rsi'] = stoch_rsi['fastd']
-        dataframe['fastk_rsi'] = stoch_rsi['fastk']
-        # Bollinger bands
-        bollinger = qtpylib.bollinger_bands(qtpylib.typical_price(dataframe), window=20, stds=2)
-        dataframe['bb_lowerband'] = bollinger['lower']
-        dataframe['bb_middleband'] = bollinger['mid']
-        dataframe['bb_upperband'] = bollinger['upper']
-        # EMA - Exponential Moving Average
-        dataframe['ema3'] = ta.EMA(dataframe, timeperiod=3)
-        dataframe['ema5'] = ta.EMA(dataframe, timeperiod=5)
-        dataframe['ema10'] = ta.EMA(dataframe, timeperiod=10)
-        dataframe['ema50'] = ta.EMA(dataframe, timeperiod=50)
-        dataframe['ema100'] = ta.EMA(dataframe, timeperiod=100)
-        # SAR Parabolic
-        dataframe['sar'] = ta.SAR(dataframe)
-        # SMA - Simple Moving Average
-        dataframe['sma'] = ta.SMA(dataframe, timeperiod=40)
-        # TEMA - Triple Exponential Moving Average
-        dataframe['tema'] = ta.TEMA(dataframe, timeperiod=9)
-        # Hilbert Transform Indicator - SineWave
-        hilbert = ta.HT_SINE(dataframe)
-        dataframe['htsine'] = hilbert['sine']
-        dataframe['htleadsine'] = hilbert['leadsine']
+    def get_lock_filename(config: Dict[str, Any]) -> str:
 
-        # Pattern Recognition - Bullish candlestick patterns
-        # ------------------------------------
-        """
-        # Hammer: values [0, 100]
-        dataframe['CDLHAMMER'] = ta.CDLHAMMER(dataframe)
-        # Inverted Hammer: values [0, 100]
-        dataframe['CDLINVERTEDHAMMER'] = ta.CDLINVERTEDHAMMER(dataframe)
-        # Dragonfly Doji: values [0, 100]
-        dataframe['CDLDRAGONFLYDOJI'] = ta.CDLDRAGONFLYDOJI(dataframe)
-        # Piercing Line: values [0, 100]
-        dataframe['CDLPIERCING'] = ta.CDLPIERCING(dataframe) # values [0, 100]
-        # Morningstar: values [0, 100]
-        dataframe['CDLMORNINGSTAR'] = ta.CDLMORNINGSTAR(dataframe) # values [0, 100]
-        # Three White Soldiers: values [0, 100]
-        dataframe['CDL3WHITESOLDIERS'] = ta.CDL3WHITESOLDIERS(dataframe) # values [0, 100]
-        """
+        return str(config['user_data_dir'] / 'hyperopt.lock')
 
-        # Pattern Recognition - Bearish candlestick patterns
-        # ------------------------------------
+    def clean_hyperopt(self) -> None:
         """
-        # Hanging Man: values [0, 100]
-        dataframe['CDLHANGINGMAN'] = ta.CDLHANGINGMAN(dataframe)
-        # Shooting Star: values [0, 100]
-        dataframe['CDLSHOOTINGSTAR'] = ta.CDLSHOOTINGSTAR(dataframe)
-        # Gravestone Doji: values [0, 100]
-        dataframe['CDLGRAVESTONEDOJI'] = ta.CDLGRAVESTONEDOJI(dataframe)
-        # Dark Cloud Cover: values [0, 100]
-        dataframe['CDLDARKCLOUDCOVER'] = ta.CDLDARKCLOUDCOVER(dataframe)
-        # Evening Doji Star: values [0, 100]
-        dataframe['CDLEVENINGDOJISTAR'] = ta.CDLEVENINGDOJISTAR(dataframe)
-        # Evening Star: values [0, 100]
-        dataframe['CDLEVENINGSTAR'] = ta.CDLEVENINGSTAR(dataframe)
+        Remove hyperopt pickle files to restart hyperopt.
         """
+        for f in [self.tickerdata_pickle, self.trials_file]:
+            p = Path(f)
+            if p.is_file():
+                logger.info(f"Removing `{p}`.")
+                p.unlink()
 
-        # Pattern Recognition - Bullish/Bearish candlestick patterns
-        # ------------------------------------
-        """
-        # Three Line Strike: values [0, -100, 100]
-        dataframe['CDL3LINESTRIKE'] = ta.CDL3LINESTRIKE(dataframe)
-        # Spinning Top: values [0, -100, 100]
-        dataframe['CDLSPINNINGTOP'] = ta.CDLSPINNINGTOP(dataframe) # values [0, -100, 100]
-        # Engulfing: values [0, -100, 100]
-        dataframe['CDLENGULFING'] = ta.CDLENGULFING(dataframe) # values [0, -100, 100]
-        # Harami: values [0, -100, 100]
-        dataframe['CDLHARAMI'] = ta.CDLHARAMI(dataframe) # values [0, -100, 100]
-        # Three Outside Up/Down: values [0, -100, 100]
-        dataframe['CDL3OUTSIDE'] = ta.CDL3OUTSIDE(dataframe) # values [0, -100, 100]
-        # Three Inside Up/Down: values [0, -100, 100]
-        dataframe['CDL3INSIDE'] = ta.CDL3INSIDE(dataframe) # values [0, -100, 100]
-        """
+    def _get_params_dict(self, raw_params: List[Any]) -> Dict:
 
-        # Chart type
-        # ------------------------------------
-        # Heikinashi stategy
-        heikinashi = qtpylib.heikinashi(dataframe)
-        dataframe['ha_open'] = heikinashi['open']
-        dataframe['ha_close'] = heikinashi['close']
-        dataframe['ha_high'] = heikinashi['high']
-        dataframe['ha_low'] = heikinashi['low']
+        dimensions: List[Dimension] = self.dimensions
 
-        return dataframe
+        # Ensure the number of dimensions match
+        # the number of parameters in the list.
+        if len(raw_params) != len(dimensions):
+            raise ValueError('Mismatch in number of search-space dimensions.')
 
-    def save_trials(self) -> None:
+        # Return a dict where the keys are the names of the dimensions
+        # and the values are taken from the list of parameters.
+        return {d.name: v for d, v in zip(dimensions, raw_params)}
+
+    def save_trials(self, final: bool = False) -> None:
         """
         Save hyperopt trials to file
         """
-        logger.info('Saving Trials to \'%s\'', self.trials_file)
-        pickle.dump(self.trials, open(self.trials_file, 'wb'))
+        num_trials = len(self.trials)
+        if num_trials > self.num_trials_saved:
+            logger.info(f"Saving {num_trials} {plural(num_trials, 'epoch')}.")
+            dump(self.trials, self.trials_file)
+            self.num_trials_saved = num_trials
+        if final:
+            logger.info(f"{num_trials} {plural(num_trials, 'epoch')} "
+                        f"saved to '{self.trials_file}'.")
 
-    def read_trials(self) -> Trials:
+    @staticmethod
+    def _read_trials(trials_file: Path) -> List:
         """
         Read hyperopt trials file
         """
-        logger.info('Reading Trials from \'%s\'', self.trials_file)
-        trials = pickle.load(open(self.trials_file, 'rb'))
-        os.remove(self.trials_file)
+        logger.info("Reading Trials from '%s'", trials_file)
+        trials = load(trials_file)
         return trials
 
-    def log_trials_result(self) -> None:
+    def _get_params_details(self, params: Dict) -> Dict:
         """
-        Display Best hyperopt result
+        Return the params for each space
         """
-        vals = json.dumps(self.trials.best_trial['misc']['vals'], indent=4)
-        results = self.trials.best_trial['result']['result']
-        logger.info('Best result:\n%s\nwith values:\n%s', results, vals)
+        result: Dict = {}
 
-    def log_results(self, results) -> None:
+        if self.has_space('buy'):
+            result['buy'] = {p.name: params.get(p.name)
+                             for p in self.hyperopt_space('buy')}
+        if self.has_space('sell'):
+            result['sell'] = {p.name: params.get(p.name)
+                              for p in self.hyperopt_space('sell')}
+        if self.has_space('roi'):
+            result['roi'] = self.custom_hyperopt.generate_roi_table(params)
+        if self.has_space('stoploss'):
+            result['stoploss'] = {p.name: params.get(p.name)
+                                  for p in self.hyperopt_space('stoploss')}
+        if self.has_space('trailing'):
+            result['trailing'] = self.custom_hyperopt.generate_trailing_params(params)
+
+        return result
+
+    @staticmethod
+    def print_epoch_details(results, total_epochs: int, print_json: bool,
+                            no_header: bool = False, header_str: str = None) -> None:
+        """
+        Display details of the hyperopt result
+        """
+        params = results.get('params_details', {})
+
+        # Default header string
+        if header_str is None:
+            header_str = "Best result"
+
+        if not no_header:
+            explanation_str = Hyperopt._format_explanation_string(results, total_epochs)
+            print(f"\n{header_str}:\n\n{explanation_str}\n")
+
+        if print_json:
+            result_dict: Dict = {}
+            for s in ['buy', 'sell', 'roi', 'stoploss', 'trailing']:
+                Hyperopt._params_update_for_json(result_dict, params, s)
+            print(rapidjson.dumps(result_dict, default=str, number_mode=rapidjson.NM_NATIVE))
+
+        else:
+            Hyperopt._params_pretty_print(params, 'buy', "Buy hyperspace params:")
+            Hyperopt._params_pretty_print(params, 'sell', "Sell hyperspace params:")
+            Hyperopt._params_pretty_print(params, 'roi', "ROI table:")
+            Hyperopt._params_pretty_print(params, 'stoploss', "Stoploss:")
+            Hyperopt._params_pretty_print(params, 'trailing', "Trailing stop:")
+
+    @staticmethod
+    def _params_update_for_json(result_dict, params, space: str) -> None:
+        if space in params:
+            space_params = Hyperopt._space_params(params, space)
+            if space in ['buy', 'sell']:
+                result_dict.setdefault('params', {}).update(space_params)
+            elif space == 'roi':
+                # Convert keys in min_roi dict to strings because
+                # rapidjson cannot dump dicts with integer keys...
+                # OrderedDict is used to keep the numeric order of the items
+                # in the dict.
+                result_dict['minimal_roi'] = OrderedDict(
+                    (str(k), v) for k, v in space_params.items()
+                )
+            else:  # 'stoploss', 'trailing'
+                result_dict.update(space_params)
+
+    @staticmethod
+    def _params_pretty_print(params, space: str, header: str) -> None:
+        if space in params:
+            space_params = Hyperopt._space_params(params, space, 5)
+            if space == 'stoploss':
+                print(header, space_params.get('stoploss'))
+            else:
+                print(header)
+                pprint(space_params, indent=4)
+
+    @staticmethod
+    def _space_params(params, space: str, r: int = None) -> Dict:
+        d = params[space]
+        # Round floats to `r` digits after the decimal point if requested
+        return round_dict(d, r) if r else d
+
+    @staticmethod
+    def is_best_loss(results, current_best_loss: float) -> bool:
+        return results['loss'] < current_best_loss
+
+    def print_results(self, results) -> None:
         """
         Log results if it is better than any previous evaluation
         """
-        if results['loss'] < self.current_best_loss:
-            self.current_best_loss = results['loss']
-            log_msg = '\n{:5d}/{}: {}. Loss {:.5f}'.format(
-                results['current_tries'],
-                results['total_tries'],
-                results['result'],
-                results['loss']
-            )
-            print(log_msg)
-        else:
-            print('.', end='')
+        is_best = results['is_best']
+        if not self.print_all:
+            # Print '\n' after each 100th epoch to separate dots from the log messages.
+            # Otherwise output is messy on a terminal.
+            print('.', end='' if results['current_epoch'] % 100 != 0 else None)  # type: ignore
             sys.stdout.flush()
 
-    def calculate_loss(self, total_profit: float, trade_count: int, trade_duration: float) -> float:
-        """
-        Objective function, returns smaller number for more optimal results
-        """
-        trade_loss = 1 - 0.25 * exp(-(trade_count - self.target_trades) ** 2 / 10 ** 5.8)
-        profit_loss = max(0, 1 - total_profit / self.expected_max_profit)
-        duration_loss = 0.4 * min(trade_duration / self.max_accepted_trade_duration, 1)
-        return trade_loss + profit_loss + duration_loss
+        if self.print_all or is_best:
+            if not self.print_all:
+                # Separate the results explanation string from dots
+                print("\n")
+            self.print_results_explanation(results, self.total_epochs, self.print_all,
+                                           self.print_colorized)
 
     @staticmethod
-    def generate_roi_table(params: Dict) -> Dict[int, float]:
+    def print_results_explanation(results, total_epochs, highlight_best: bool,
+                                  print_colorized: bool) -> None:
         """
-        Generate the ROI table thqt will be used by Hyperopt
+        Log results explanation string
         """
-        roi_table = {}
-        roi_table[0] = params['roi_p1'] + params['roi_p2'] + params['roi_p3']
-        roi_table[params['roi_t3']] = params['roi_p1'] + params['roi_p2']
-        roi_table[params['roi_t3'] + params['roi_t2']] = params['roi_p1']
-        roi_table[params['roi_t3'] + params['roi_t2'] + params['roi_t1']] = 0
-
-        return roi_table
-
-    @staticmethod
-    def roi_space() -> Dict[str, Any]:
-        """
-        Values to search for each ROI steps
-        """
-        return {
-            'roi_t1': hp.quniform('roi_t1', 10, 120, 20),
-            'roi_t2': hp.quniform('roi_t2', 10, 60, 15),
-            'roi_t3': hp.quniform('roi_t3', 10, 40, 10),
-            'roi_p1': hp.quniform('roi_p1', 0.01, 0.04, 0.01),
-            'roi_p2': hp.quniform('roi_p2', 0.01, 0.07, 0.01),
-            'roi_p3': hp.quniform('roi_p3', 0.01, 0.20, 0.01),
-        }
+        explanation_str = Hyperopt._format_explanation_string(results, total_epochs)
+        # Colorize output
+        if print_colorized:
+            if results['total_profit'] > 0:
+                explanation_str = Fore.GREEN + explanation_str
+            if highlight_best and results['is_best']:
+                explanation_str = Style.BRIGHT + explanation_str
+        print(explanation_str)
 
     @staticmethod
-    def stoploss_space() -> Dict[str, Any]:
-        """
-        Stoploss Value to search
-        """
-        return {
-            'stoploss': hp.quniform('stoploss', -0.5, -0.02, 0.02),
-        }
-
-    @staticmethod
-    def indicator_space() -> Dict[str, Any]:
-        """
-        Define your Hyperopt space for searching strategy parameters
-        """
-        return {
-            'macd_below_zero': hp.choice('macd_below_zero', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'mfi': hp.choice('mfi', [
-                {'enabled': False},
-                {'enabled': True, 'value': hp.quniform('mfi-value', 10, 25, 5)}
-            ]),
-            'fastd': hp.choice('fastd', [
-                {'enabled': False},
-                {'enabled': True, 'value': hp.quniform('fastd-value', 15, 45, 5)}
-            ]),
-            'adx': hp.choice('adx', [
-                {'enabled': False},
-                {'enabled': True, 'value': hp.quniform('adx-value', 20, 50, 5)}
-            ]),
-            'rsi': hp.choice('rsi', [
-                {'enabled': False},
-                {'enabled': True, 'value': hp.quniform('rsi-value', 20, 40, 5)}
-            ]),
-            'uptrend_long_ema': hp.choice('uptrend_long_ema', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'uptrend_short_ema': hp.choice('uptrend_short_ema', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'over_sar': hp.choice('over_sar', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'green_candle': hp.choice('green_candle', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'uptrend_sma': hp.choice('uptrend_sma', [
-                {'enabled': False},
-                {'enabled': True}
-            ]),
-            'trigger': hp.choice('trigger', [
-                {'type': 'lower_bb'},
-                {'type': 'lower_bb_tema'},
-                {'type': 'faststoch10'},
-                {'type': 'ao_cross_zero'},
-                {'type': 'ema3_cross_ema10'},
-                {'type': 'macd_cross_signal'},
-                {'type': 'sar_reversal'},
-                {'type': 'ht_sine'},
-                {'type': 'heiken_reversal_bull'},
-                {'type': 'di_cross'},
-            ]),
-        }
+    def _format_explanation_string(results, total_epochs) -> str:
+        return (("*" if results['is_initial_point'] else " ") +
+                f"{results['current_epoch']:5d}/{total_epochs}: " +
+                f"{results['results_explanation']} " +
+                f"Objective: {results['loss']:.5f}")
 
     def has_space(self, space: str) -> bool:
         """
-        Tell if a space value is contained in the configuration
+        Tell if the space value is contained in the configuration
         """
-        if space in self.config['spaces'] or 'all' in self.config['spaces']:
-            return True
-        return False
+        # The 'trailing' space is not included in the 'default' set of spaces
+        if space == 'trailing':
+            return any(s in self.config['spaces'] for s in [space, 'all'])
+        else:
+            return any(s in self.config['spaces'] for s in [space, 'all', 'default'])
 
-    def hyperopt_space(self) -> Dict[str, Any]:
+    def hyperopt_space(self, space: Optional[str] = None) -> List[Dimension]:
         """
-        Return the space to use during Hyperopt
+        Return the dimensions in the hyperoptimization space.
+        :param space: Defines hyperspace to return dimensions for.
+        If None, then the self.has_space() will be used to return dimensions
+        for all hyperspaces used.
         """
-        spaces: Dict = {}
-        if self.has_space('buy'):
-            spaces = {**spaces, **Hyperopt.indicator_space()}
-        if self.has_space('roi'):
-            spaces = {**spaces, **Hyperopt.roi_space()}
-        if self.has_space('stoploss'):
-            spaces = {**spaces, **Hyperopt.stoploss_space()}
+        spaces: List[Dimension] = []
+
+        if space == 'buy' or (space is None and self.has_space('buy')):
+            logger.debug("Hyperopt has 'buy' space")
+            spaces += self.custom_hyperopt.indicator_space()
+
+        if space == 'sell' or (space is None and self.has_space('sell')):
+            logger.debug("Hyperopt has 'sell' space")
+            spaces += self.custom_hyperopt.sell_indicator_space()
+
+        if space == 'roi' or (space is None and self.has_space('roi')):
+            logger.debug("Hyperopt has 'roi' space")
+            spaces += self.custom_hyperopt.roi_space()
+
+        if space == 'stoploss' or (space is None and self.has_space('stoploss')):
+            logger.debug("Hyperopt has 'stoploss' space")
+            spaces += self.custom_hyperopt.stoploss_space()
+
+        if space == 'trailing' or (space is None and self.has_space('trailing')):
+            logger.debug("Hyperopt has 'trailing' space")
+            spaces += self.custom_hyperopt.trailing_space()
+
         return spaces
 
-    @staticmethod
-    def buy_strategy_generator(params: Dict[str, Any]) -> Callable:
+    def generate_optimizer(self, raw_params: List[Any], iteration=None) -> Dict:
         """
-        Define the buy strategy parameters to be used by hyperopt
+        Used Optimize function. Called once per epoch to optimize whatever is configured.
+        Keep this function as optimized as possible!
         """
-        def populate_buy_trend(dataframe: DataFrame) -> DataFrame:
-            """
-            Buy strategy Hyperopt will build and use
-            """
-            conditions = []
-            # GUARDS AND TRENDS
-            if 'uptrend_long_ema' in params and params['uptrend_long_ema']['enabled']:
-                conditions.append(dataframe['ema50'] > dataframe['ema100'])
-            if 'macd_below_zero' in params and params['macd_below_zero']['enabled']:
-                conditions.append(dataframe['macd'] < 0)
-            if 'uptrend_short_ema' in params and params['uptrend_short_ema']['enabled']:
-                conditions.append(dataframe['ema5'] > dataframe['ema10'])
-            if 'mfi' in params and params['mfi']['enabled']:
-                conditions.append(dataframe['mfi'] < params['mfi']['value'])
-            if 'fastd' in params and params['fastd']['enabled']:
-                conditions.append(dataframe['fastd'] < params['fastd']['value'])
-            if 'adx' in params and params['adx']['enabled']:
-                conditions.append(dataframe['adx'] > params['adx']['value'])
-            if 'rsi' in params and params['rsi']['enabled']:
-                conditions.append(dataframe['rsi'] < params['rsi']['value'])
-            if 'over_sar' in params and params['over_sar']['enabled']:
-                conditions.append(dataframe['close'] > dataframe['sar'])
-            if 'green_candle' in params and params['green_candle']['enabled']:
-                conditions.append(dataframe['close'] > dataframe['open'])
-            if 'uptrend_sma' in params and params['uptrend_sma']['enabled']:
-                prevsma = dataframe['sma'].shift(1)
-                conditions.append(dataframe['sma'] > prevsma)
+        params_dict = self._get_params_dict(raw_params)
+        params_details = self._get_params_details(params_dict)
 
-            # TRIGGERS
-            triggers = {
-                'lower_bb': (
-                    dataframe['close'] < dataframe['bb_lowerband']
-                ),
-                'lower_bb_tema': (
-                    dataframe['tema'] < dataframe['bb_lowerband']
-                ),
-                'faststoch10': (qtpylib.crossed_above(
-                    dataframe['fastd'], 10.0
-                )),
-                'ao_cross_zero': (qtpylib.crossed_above(
-                    dataframe['ao'], 0.0
-                )),
-                'ema3_cross_ema10': (qtpylib.crossed_above(
-                    dataframe['ema3'], dataframe['ema10']
-                )),
-                'macd_cross_signal': (qtpylib.crossed_above(
-                    dataframe['macd'], dataframe['macdsignal']
-                )),
-                'sar_reversal': (qtpylib.crossed_above(
-                    dataframe['close'], dataframe['sar']
-                )),
-                'ht_sine': (qtpylib.crossed_above(
-                    dataframe['htleadsine'], dataframe['htsine']
-                )),
-                'heiken_reversal_bull': (
-                    (qtpylib.crossed_above(dataframe['ha_close'], dataframe['ha_open'])) &
-                    (dataframe['ha_low'] == dataframe['ha_open'])
-                ),
-                'di_cross': (qtpylib.crossed_above(
-                    dataframe['plus_di'], dataframe['minus_di']
-                )),
-            }
-            conditions.append(triggers.get(params['trigger']['type']))
-
-            dataframe.loc[
-                reduce(lambda x, y: x & y, conditions),
-                'buy'] = 1
-
-            return dataframe
-
-        return populate_buy_trend
-
-    def generate_optimizer(self, params: Dict) -> Dict:
         if self.has_space('roi'):
-            self.analyze.strategy.minimal_roi = self.generate_roi_table(params)
+            self.backtesting.strategy.minimal_roi = \
+                self.custom_hyperopt.generate_roi_table(params_dict)
 
         if self.has_space('buy'):
-            self.populate_buy_trend = self.buy_strategy_generator(params)
+            self.backtesting.strategy.advise_buy = \
+                self.custom_hyperopt.buy_strategy_generator(params_dict)
+
+        if self.has_space('sell'):
+            self.backtesting.strategy.advise_sell = \
+                self.custom_hyperopt.sell_strategy_generator(params_dict)
 
         if self.has_space('stoploss'):
-            self.analyze.strategy.stoploss = params['stoploss']
+            self.backtesting.strategy.stoploss = params_dict['stoploss']
 
-        results = self.backtest(
-            {
-                'stake_amount': self.config['stake_amount'],
-                'processed': self.processed,
-                'realistic': self.config.get('realistic_simulation', False),
-            }
+        if self.has_space('trailing'):
+            d = self.custom_hyperopt.generate_trailing_params(params_dict)
+            self.backtesting.strategy.trailing_stop = d['trailing_stop']
+            self.backtesting.strategy.trailing_stop_positive = d['trailing_stop_positive']
+            self.backtesting.strategy.trailing_stop_positive_offset = \
+                d['trailing_stop_positive_offset']
+            self.backtesting.strategy.trailing_only_offset_is_reached = \
+                d['trailing_only_offset_is_reached']
+
+        processed = load(self.tickerdata_pickle)
+
+        min_date, max_date = get_timerange(processed)
+
+        backtesting_results = self.backtesting.backtest(
+            processed=processed,
+            stake_amount=self.config['stake_amount'],
+            start_date=min_date,
+            end_date=max_date,
+            max_open_trades=self.max_open_trades,
+            position_stacking=self.position_stacking,
         )
-        result_explanation = self.format_results(results)
+        return self._get_results_dict(backtesting_results, min_date, max_date,
+                                      params_dict, params_details)
 
-        total_profit = results.profit_percent.sum()
-        trade_count = len(results.index)
-        trade_duration = results.trade_duration.mean()
+    def _get_results_dict(self, backtesting_results, min_date, max_date,
+                          params_dict, params_details):
+        results_metrics = self._calculate_results_metrics(backtesting_results)
+        results_explanation = self._format_results_explanation_string(results_metrics)
 
-        if trade_count == 0 or trade_duration > self.max_accepted_trade_duration:
-            print('.', end='')
-            sys.stdout.flush()
-            return {
-                'status': STATUS_FAIL,
-                'loss': float('inf')
-            }
+        trade_count = results_metrics['trade_count']
+        total_profit = results_metrics['total_profit']
 
-        loss = self.calculate_loss(total_profit, trade_count, trade_duration)
-
-        self.current_tries += 1
-
-        self.log_results(
-            {
-                'loss': loss,
-                'current_tries': self.current_tries,
-                'total_tries': self.total_tries,
-                'result': result_explanation,
-            }
-        )
-
+        # If this evaluation contains too short amount of trades to be
+        # interesting -- consider it as 'bad' (assigned max. loss value)
+        # in order to cast this hyperspace point away from optimization
+        # path. We do not want to optimize 'hodl' strategies.
+        loss: float = MAX_LOSS
+        if trade_count >= self.config['hyperopt_min_trades']:
+            loss = self.calculate_loss(results=backtesting_results, trade_count=trade_count,
+                                       min_date=min_date.datetime, max_date=max_date.datetime)
         return {
             'loss': loss,
-            'status': STATUS_OK,
-            'result': result_explanation,
+            'params_dict': params_dict,
+            'params_details': params_details,
+            'results_metrics': results_metrics,
+            'results_explanation': results_explanation,
+            'total_profit': total_profit,
         }
 
-    def format_results(self, results: DataFrame) -> str:
+    def _calculate_results_metrics(self, backtesting_results: DataFrame) -> Dict:
+        return {
+            'trade_count': len(backtesting_results.index),
+            'avg_profit': backtesting_results.profit_percent.mean() * 100.0,
+            'total_profit': backtesting_results.profit_abs.sum(),
+            'profit': backtesting_results.profit_percent.sum() * 100.0,
+            'duration': backtesting_results.trade_duration.mean(),
+        }
+
+    def _format_results_explanation_string(self, results_metrics: Dict) -> str:
         """
-        Return the format result in a string
+        Return the formatted results explanation in a string
         """
-        return ('{:6d} trades. Avg profit {: 5.2f}%. '
-                'Total profit {: 11.8f} {} ({:.4f}Σ%). Avg duration {:5.1f} mins.').format(
-                    len(results.index),
-                    results.profit_percent.mean() * 100.0,
-                    results.profit_abs.sum(),
-                    self.config['stake_currency'],
-                    results.profit_percent.sum(),
-                    results.trade_duration.mean(),
-                )
+        stake_cur = self.config['stake_currency']
+        return (f"{results_metrics['trade_count']:6d} trades. "
+                f"Avg profit {results_metrics['avg_profit']: 6.2f}%. "
+                f"Total profit {results_metrics['total_profit']: 11.8f} {stake_cur} "
+                f"({results_metrics['profit']: 7.2f}\N{GREEK CAPITAL LETTER SIGMA}%). "
+                f"Avg duration {results_metrics['duration']:5.1f} min."
+                ).encode(locale.getpreferredencoding(), 'replace').decode('utf-8')
+
+    def get_optimizer(self, dimensions: List[Dimension], cpu_count) -> Optimizer:
+        return Optimizer(
+            dimensions,
+            base_estimator="ET",
+            acq_optimizer="auto",
+            n_initial_points=INITIAL_POINTS,
+            acq_optimizer_kwargs={'n_jobs': cpu_count},
+            random_state=self.random_state,
+        )
+
+    def fix_optimizer_models_list(self) -> None:
+        """
+        WORKAROUND: Since skopt is not actively supported, this resolves problems with skopt
+        memory usage, see also: https://github.com/scikit-optimize/scikit-optimize/pull/746
+
+        This may cease working when skopt updates if implementation of this intrinsic
+        part changes.
+        """
+        n = len(self.opt.models) - SKOPT_MODELS_MAX_NUM
+        # Keep no more than 2*SKOPT_MODELS_MAX_NUM models in the skopt models list,
+        # remove the old ones. These are actually of no use, the current model
+        # from the estimator is the only one used in the skopt optimizer.
+        # Freqtrade code also does not inspect details of the models.
+        if n >= SKOPT_MODELS_MAX_NUM:
+            logger.debug(f"Fixing skopt models list, removing {n} old items...")
+            del self.opt.models[0:n]
+
+    def run_optimizer_parallel(self, parallel, asked, i) -> List:
+        return parallel(delayed(
+                        wrap_non_picklable_objects(self.generate_optimizer))(v, i) for v in asked)
+
+    @staticmethod
+    def load_previous_results(trials_file: Path) -> List:
+        """
+        Load data for epochs from the file if we have one
+        """
+        trials: List = []
+        if trials_file.is_file() and trials_file.stat().st_size > 0:
+            trials = Hyperopt._read_trials(trials_file)
+            if trials[0].get('is_best') is None:
+                raise OperationalException(
+                    "The file with Hyperopt results is incompatible with this version "
+                    "of Freqtrade and cannot be loaded.")
+            logger.info(f"Loaded {len(trials)} previous evaluations from disk.")
+        return trials
+
+    def _set_random_state(self, random_state: Optional[int]) -> int:
+        return random_state or random.randint(1, 2**16 - 1)
 
     def start(self) -> None:
-        timerange = Arguments.parse_timerange(None if self.config.get(
-            'timerange') is None else str(self.config.get('timerange')))
-        data = load_data(
-            datadir=str(self.config.get('datadir')),
-            pairs=self.config['exchange']['pair_whitelist'],
-            ticker_interval=self.ticker_interval,
-            timerange=timerange
+        self.random_state = self._set_random_state(self.config.get('hyperopt_random_state', None))
+        logger.info(f"Using optimizer random state: {self.random_state}")
+
+        data, timerange = self.backtesting.load_bt_data()
+
+        preprocessed = self.backtesting.strategy.tickerdata_to_dataframe(data)
+
+        # Trim startup period from analyzed dataframe
+        for pair, df in preprocessed.items():
+            preprocessed[pair] = trim_dataframe(df, timerange)
+        min_date, max_date = get_timerange(data)
+
+        logger.info(
+            'Hyperopting with data from %s up to %s (%s days)..',
+            min_date.isoformat(), max_date.isoformat(), (max_date - min_date).days
         )
+        dump(preprocessed, self.tickerdata_pickle)
 
-        if self.has_space('buy'):
-            self.analyze.populate_indicators = Hyperopt.populate_indicators  # type: ignore
-        self.processed = self.tickerdata_to_dataframe(data)
+        # We don't need exchange instance anymore while running hyperopt
+        self.backtesting.exchange = None  # type: ignore
 
-        logger.info('Preparing Trials..')
-        signal.signal(signal.SIGINT, self.signal_handler)
-        # read trials file if we have one
-        if os.path.exists(self.trials_file) and os.path.getsize(self.trials_file) > 0:
-            self.trials = self.read_trials()
+        self.trials = self.load_previous_results(self.trials_file)
 
-            self.current_tries = len(self.trials.results)
-            self.total_tries += self.current_tries
-            logger.info(
-                'Continuing with trials. Current: %d, Total: %d',
-                self.current_tries,
-                self.total_tries
-            )
+        cpus = cpu_count()
+        logger.info(f"Found {cpus} CPU cores. Let's make them scream!")
+        config_jobs = self.config.get('hyperopt_jobs', -1)
+        logger.info(f'Number of parallel jobs set as: {config_jobs}')
+
+        self.dimensions: List[Dimension] = self.hyperopt_space()
+        self.opt = self.get_optimizer(self.dimensions, config_jobs)
+
+        if self.print_colorized:
+            colorama_init(autoreset=True)
 
         try:
-            best_parameters = fmin(
-                fn=self.generate_optimizer,
-                space=self.hyperopt_space(),
-                algo=tpe.suggest,
-                max_evals=self.total_tries,
-                trials=self.trials
-            )
+            with Parallel(n_jobs=config_jobs) as parallel:
+                jobs = parallel._effective_n_jobs()
+                logger.info(f'Effective number of parallel workers used: {jobs}')
+                EVALS = max(self.total_epochs // jobs, 1)
+                for i in range(EVALS):
+                    asked = self.opt.ask(n_points=jobs)
+                    f_val = self.run_optimizer_parallel(parallel, asked, i)
+                    self.opt.tell(asked, [v['loss'] for v in f_val])
+                    self.fix_optimizer_models_list()
+                    for j in range(jobs):
+                        # Use human-friendly indexes here (starting from 1)
+                        current = i * jobs + j + 1
+                        val = f_val[j]
+                        val['current_epoch'] = current
+                        val['is_initial_point'] = current <= INITIAL_POINTS
+                        logger.debug(f"Optimizer epoch evaluated: {val}")
 
-            results = sorted(self.trials.results, key=itemgetter('loss'))
-            best_result = results[0]['result']
+                        is_best = self.is_best_loss(val, self.current_best_loss)
+                        # This value is assigned here and not in the optimization method
+                        # to keep proper order in the list of results. That's because
+                        # evaluations can take different time. Here they are aligned in the
+                        # order they will be shown to the user.
+                        val['is_best'] = is_best
 
-        except ValueError:
-            best_parameters = {}
-            best_result = 'Sorry, Hyperopt was not able to find good parameters. Please ' \
-                          'try with more epochs (param: -e).'
+                        self.print_results(val)
 
-        # Improve best parameter logging display
-        if best_parameters:
-            best_parameters = space_eval(
-                self.hyperopt_space(),
-                best_parameters
-            )
+                        if is_best:
+                            self.current_best_loss = val['loss']
+                        self.trials.append(val)
+                        # Save results after each best epoch and every 100 epochs
+                        if is_best or current % 100 == 0:
+                            self.save_trials()
+        except KeyboardInterrupt:
+            print('User interrupted..')
 
-        logger.info('Best parameters:\n%s', json.dumps(best_parameters, indent=4))
-        if 'roi_t1' in best_parameters:
-            logger.info('ROI table:\n%s', self.generate_roi_table(best_parameters))
+        self.save_trials(final=True)
 
-        logger.info('Best Result:\n%s', best_result)
-
-        # Store trials result to file to resume next time
-        self.save_trials()
-
-    def signal_handler(self, sig, frame) -> None:
-        """
-        Hyperopt SIGINT handler
-        """
-        logger.info(
-            'Hyperopt received %s',
-            signal.Signals(sig).name
-        )
-
-        self.save_trials()
-        self.log_trials_result()
-        sys.exit(0)
-
-
-def start(args: Namespace) -> None:
-    """
-    Start Backtesting script
-    :param args: Cli args from Arguments()
-    :return: None
-    """
-
-    # Remove noisy log messages
-    logging.getLogger('hyperopt.tpe').setLevel(logging.WARNING)
-
-    # Initialize configuration
-    # Monkey patch the configuration with hyperopt_conf.py
-    configuration = Configuration(args)
-    logger.info('Starting freqtrade in Hyperopt mode')
-    config = configuration.load_config()
-
-    config['exchange']['key'] = ''
-    config['exchange']['secret'] = ''
-
-    # Initialize backtesting object
-    hyperopt = Hyperopt(config)
-    hyperopt.start()
+        if self.trials:
+            sorted_trials = sorted(self.trials, key=itemgetter('loss'))
+            results = sorted_trials[0]
+            self.print_epoch_details(results, self.total_epochs, self.print_json)
+        else:
+            # This is printed when Ctrl+C is pressed quickly, before first epochs have
+            # a chance to be evaluated.
+            print("No epochs evaluated yet, no best result.")
