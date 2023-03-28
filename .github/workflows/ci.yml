@@ -212,7 +212,7 @@ jobs:
         build_helpers/publish_docker.sh
 
     - name: Build raspberry image for ${{ steps.extract_branch.outputs.branch }}_pi
-      uses: elgohr/Publish-Docker-Github-Action@2.7
+      uses: elgohr/Publish-Docker-Github-Action@v5
       with:
         name: freqtradeorg/freqtrade:${{ steps.extract_branch.outputs.branch }}_pi
         username: ${{ secrets.DOCKER_USERNAME }}
