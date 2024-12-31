@@ -3,32 +3,59 @@
 This page explains the different parameters of the bot and how to run it.
 
 !!! Note
-    If you've used `setup.sh`, don't forget to activate your virtual environment (`source .env/bin/activate`) before running freqtrade commands.
+    If you've used `setup.sh`, don't forget to activate your virtual environment (`source .venv/bin/activate`) before running freqtrade commands.
+
+!!! Warning "Up-to-date clock"
+    The clock on the system running the bot must be accurate, synchronized to a NTP server frequently enough to avoid problems with communication to the exchanges.
 
 ## Bot commands
 
 ```
 usage: freqtrade [-h] [-V]
-                 {trade,backtesting,edge,hyperopt,create-userdir,list-exchanges,list-timeframes,download-data,plot-dataframe,plot-profit}
+                 {trade,create-userdir,new-config,show-config,new-strategy,download-data,convert-data,convert-trade-data,trades-to-ohlcv,list-data,backtesting,backtesting-show,backtesting-analysis,edge,hyperopt,hyperopt-list,hyperopt-show,list-exchanges,list-markets,list-pairs,list-strategies,list-freqaimodels,list-timeframes,show-trades,test-pairlist,convert-db,install-ui,plot-dataframe,plot-profit,webserver,strategy-updater,lookahead-analysis,recursive-analysis}
                  ...
 
 Free, open source crypto trading bot
 
 positional arguments:
-  {trade,backtesting,edge,hyperopt,create-userdir,list-exchanges,list-timeframes,download-data,plot-dataframe,plot-profit}
+  {trade,create-userdir,new-config,show-config,new-strategy,download-data,convert-data,convert-trade-data,trades-to-ohlcv,list-data,backtesting,backtesting-show,backtesting-analysis,edge,hyperopt,hyperopt-list,hyperopt-show,list-exchanges,list-markets,list-pairs,list-strategies,list-freqaimodels,list-timeframes,show-trades,test-pairlist,convert-db,install-ui,plot-dataframe,plot-profit,webserver,strategy-updater,lookahead-analysis,recursive-analysis}
     trade               Trade module.
+    create-userdir      Create user-data directory.
+    new-config          Create new config
+    show-config         Show resolved config
+    new-strategy        Create new strategy
+    download-data       Download backtesting data.
+    convert-data        Convert candle (OHLCV) data from one format to
+                        another.
+    convert-trade-data  Convert trade data from one format to another.
+    trades-to-ohlcv     Convert trade data to OHLCV data.
+    list-data           List downloaded data.
     backtesting         Backtesting module.
+    backtesting-show    Show past Backtest results
+    backtesting-analysis
+                        Backtest Analysis module.
     edge                Edge module.
     hyperopt            Hyperopt module.
-    create-userdir      Create user-data directory.
+    hyperopt-list       List Hyperopt results
+    hyperopt-show       Show details of Hyperopt results
     list-exchanges      Print available exchanges.
-    list-timeframes     Print available ticker intervals (timeframes) for the
-                        exchange.
-    download-data       Download backtesting data.
+    list-markets        Print markets on exchange.
+    list-pairs          Print pairs on exchange.
+    list-strategies     Print available strategies.
+    list-freqaimodels   Print available freqAI models.
+    list-timeframes     Print available timeframes for the exchange.
+    show-trades         Show trades.
+    test-pairlist       Test your pairlist configuration.
+    convert-db          Migrate database to different system
+    install-ui          Install FreqUI
     plot-dataframe      Plot candles with indicators.
     plot-profit         Generate plot showing profits.
+    webserver           Webserver module.
+    strategy-updater    updates outdated strategy files to the current version
+    lookahead-analysis  Check for potential look ahead bias.
+    recursive-analysis  Check for potential recursive formula issue.
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   -V, --version         show program's version number and exit
 
@@ -40,6 +67,7 @@ optional arguments:
 usage: freqtrade trade [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
                        [--userdir PATH] [-s NAME] [--strategy-path PATH]
                        [--db-url PATH] [--sd-notify] [--dry-run]
+                       [--dry-run-wallet DRY_RUN_WALLET]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -50,6 +78,9 @@ optional arguments:
   --sd-notify           Notify systemd service manager.
   --dry-run             Enforce dry-run for trading (removes Exchange secrets
                         and simulates trades).
+  --dry-run-wallet DRY_RUN_WALLET, --starting-balance DRY_RUN_WALLET
+                        Starting balance, used for backtesting / hyperopt and
+                        dry-runs.
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
@@ -72,7 +103,6 @@ Strategy arguments:
                         Specify strategy class name which will be used by the
                         bot.
   --strategy-path PATH  Specify additional strategy lookup path.
-.
 
 ```
 
@@ -144,10 +174,10 @@ It is recommended to use version control to keep track of changes to your strate
 ### How to use **--strategy**?
 
 This parameter will allow you to load your custom strategy class.
-Per default without `--strategy` or `-s` the bot will load the
-`DefaultStrategy` included with the bot (`freqtrade/strategy/default_strategy.py`).
+To test the bot installation, you can use the `SampleStrategy` installed by the `create-userdir` subcommand (usually `user_data/strategy/sample_strategy.py`).
 
-The bot will search your strategy file within `user_data/strategies` and `freqtrade/strategy`.
+The bot will search your strategy file within `user_data/strategies`.
+To use other directories, please read the next section about `--strategy-path`.
 
 To load a strategy, simply pass the class name (e.g.: `CustomStrategy`) in this parameter.
 
@@ -189,245 +219,6 @@ in production mode. Example command:
 ```bash
 freqtrade trade -c config.json --db-url sqlite:///tradesv3.dry_run.sqlite
 ```
-
-## Backtesting commands
-
-Backtesting also uses the config specified via `-c/--config`.
-
-```
-usage: freqtrade backtesting [-h] [-v] [--logfile FILE] [-V] [-c PATH]
-                             [-d PATH] [--userdir PATH] [-s NAME]
-                             [--strategy-path PATH] [-i TICKER_INTERVAL]
-                             [--timerange TIMERANGE] [--max-open-trades INT]
-                             [--stake-amount STAKE_AMOUNT] [--fee FLOAT]
-                             [--eps] [--dmmp]
-                             [--strategy-list STRATEGY_LIST [STRATEGY_LIST ...]]
-                             [--export EXPORT] [--export-filename PATH]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -i TICKER_INTERVAL, --ticker-interval TICKER_INTERVAL
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
-  --timerange TIMERANGE
-                        Specify what timerange of data to use.
-  --max-open-trades INT
-                        Override the value of the `max_open_trades`
-                        configuration setting.
-  --stake-amount STAKE_AMOUNT
-                        Override the value of the `stake_amount` configuration
-                        setting.
-  --fee FLOAT           Specify fee ratio. Will be applied twice (on trade
-                        entry and exit).
-  --eps, --enable-position-stacking
-                        Allow buying the same pair multiple times (position
-                        stacking).
-  --dmmp, --disable-max-market-positions
-                        Disable applying `max_open_trades` during backtest
-                        (same as setting `max_open_trades` to a very high
-                        number).
-  --strategy-list STRATEGY_LIST [STRATEGY_LIST ...]
-                        Provide a space-separated list of strategies to
-                        backtest. Please note that ticker-interval needs to be
-                        set either in config or via command line. When using
-                        this together with `--export trades`, the strategy-
-                        name is injected into the filename (so `backtest-
-                        data.json` becomes `backtest-data-
-                        DefaultStrategy.json`
-  --export EXPORT       Export backtest results, argument are: trades.
-                        Example: `--export=trades`
-  --export-filename PATH
-                        Save backtest results to the file with this filename.
-                        Requires `--export` to be set as well. Example:
-                        `--export-filename=user_data/backtest_results/backtest
-                        _today.json`
-
-Common arguments:
-  -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
-  --logfile FILE        Log to the file specified. Special values are:
-                        'syslog', 'journald'. See the documentation for more
-                        details.
-  -V, --version         show program's version number and exit
-  -c PATH, --config PATH
-                        Specify configuration file (default:
-                        `userdir/config.json` or `config.json` whichever
-                        exists). Multiple --config options may be used. Can be
-                        set to `-` to read config from stdin.
-  -d PATH, --datadir PATH
-                        Path to directory with historical backtesting data.
-  --userdir PATH, --user-data-dir PATH
-                        Path to userdata directory.
-
-Strategy arguments:
-  -s NAME, --strategy NAME
-                        Specify strategy class name which will be used by the
-                        bot.
-  --strategy-path PATH  Specify additional strategy lookup path.
-
-```
-
-### Getting historic data for backtesting
-
-The first time your run Backtesting, you will need to download some historic data first.
-This can be accomplished by using `freqtrade download-data`.  
-Check the corresponding [Data Downloading](data-download.md) section for more details
-
-## Hyperopt commands
-
-To optimize your strategy, you can use hyperopt parameter hyperoptimization
-to find optimal parameter values for your strategy.
-
-```
-usage: freqtrade hyperopt [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
-                          [--userdir PATH] [-s NAME] [--strategy-path PATH]
-                          [-i TICKER_INTERVAL] [--timerange TIMERANGE]
-                          [--max-open-trades INT]
-                          [--stake-amount STAKE_AMOUNT] [--fee FLOAT]
-                          [--hyperopt NAME] [--hyperopt-path PATH] [--eps]
-                          [-e INT]
-                          [--spaces {all,buy,sell,roi,stoploss,trailing,default} [{all,buy,sell,roi,stoploss,trailing,default} ...]]
-                          [--dmmp] [--print-all] [--no-color] [--print-json]
-                          [-j JOBS] [--random-state INT] [--min-trades INT]
-                          [--continue] [--hyperopt-loss NAME]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -i TICKER_INTERVAL, --ticker-interval TICKER_INTERVAL
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
-  --timerange TIMERANGE
-                        Specify what timerange of data to use.
-  --max-open-trades INT
-                        Override the value of the `max_open_trades`
-                        configuration setting.
-  --stake-amount STAKE_AMOUNT
-                        Override the value of the `stake_amount` configuration
-                        setting.
-  --fee FLOAT           Specify fee ratio. Will be applied twice (on trade
-                        entry and exit).
-  --hyperopt NAME       Specify hyperopt class name which will be used by the
-                        bot.
-  --hyperopt-path PATH  Specify additional lookup path for Hyperopt and
-                        Hyperopt Loss functions.
-  --eps, --enable-position-stacking
-                        Allow buying the same pair multiple times (position
-                        stacking).
-  -e INT, --epochs INT  Specify number of epochs (default: 100).
-  --spaces {all,buy,sell,roi,stoploss,trailing,default} [{all,buy,sell,roi,stoploss,trailing,default} ...]
-                        Specify which parameters to hyperopt. Space-separated
-                        list.
-  --dmmp, --disable-max-market-positions
-                        Disable applying `max_open_trades` during backtest
-                        (same as setting `max_open_trades` to a very high
-                        number).
-  --print-all           Print all results, not only the best ones.
-  --no-color            Disable colorization of hyperopt results. May be
-                        useful if you are redirecting output to a file.
-  --print-json          Print best results in JSON format.
-  -j JOBS, --job-workers JOBS
-                        The number of concurrently running jobs for
-                        hyperoptimization (hyperopt worker processes). If -1
-                        (default), all CPUs are used, for -2, all CPUs but one
-                        are used, etc. If 1 is given, no parallel computing
-                        code is used at all.
-  --random-state INT    Set random state to some positive integer for
-                        reproducible hyperopt results.
-  --min-trades INT      Set minimal desired number of trades for evaluations
-                        in the hyperopt optimization path (default: 1).
-  --continue            Continue hyperopt from previous runs. By default,
-                        temporary files will be removed and hyperopt will
-                        start from scratch.
-  --hyperopt-loss NAME  Specify the class name of the hyperopt loss function
-                        class (IHyperOptLoss). Different functions can
-                        generate completely different results, since the
-                        target for optimization is different. Built-in
-                        Hyperopt-loss-functions are:
-                        DefaultHyperOptLoss, OnlyProfitHyperOptLoss,
-                        SharpeHyperOptLoss, SharpeHyperOptLossDaily,
-                        SortinoHyperOptLoss, SortinoHyperOptLossDaily.
-                        (default: `DefaultHyperOptLoss`).
-
-Common arguments:
-  -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
-  --logfile FILE        Log to the file specified. Special values are:
-                        'syslog', 'journald'. See the documentation for more
-                        details.
-  -V, --version         show program's version number and exit
-  -c PATH, --config PATH
-                        Specify configuration file (default:
-                        `userdir/config.json` or `config.json` whichever
-                        exists). Multiple --config options may be used. Can be
-                        set to `-` to read config from stdin.
-  -d PATH, --datadir PATH
-                        Path to directory with historical backtesting data.
-  --userdir PATH, --user-data-dir PATH
-                        Path to userdata directory.
-
-Strategy arguments:
-  -s NAME, --strategy NAME
-                        Specify strategy class name which will be used by the
-                        bot.
-  --strategy-path PATH  Specify additional strategy lookup path.
-
-```
-
-## Edge commands
-
-To know your trade expectancy and winrate against historical data, you can use Edge.
-
-```
-usage: freqtrade edge [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
-                      [--userdir PATH] [-s NAME] [--strategy-path PATH]
-                      [-i TICKER_INTERVAL] [--timerange TIMERANGE]
-                      [--max-open-trades INT] [--stake-amount STAKE_AMOUNT]
-                      [--fee FLOAT] [--stoplosses STOPLOSS_RANGE]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -i TICKER_INTERVAL, --ticker-interval TICKER_INTERVAL
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
-  --timerange TIMERANGE
-                        Specify what timerange of data to use.
-  --max-open-trades INT
-                        Override the value of the `max_open_trades`
-                        configuration setting.
-  --stake-amount STAKE_AMOUNT
-                        Override the value of the `stake_amount` configuration
-                        setting.
-  --fee FLOAT           Specify fee ratio. Will be applied twice (on trade
-                        entry and exit).
-  --stoplosses STOPLOSS_RANGE
-                        Defines a range of stoploss values against which edge
-                        will assess the strategy. The format is "min,max,step"
-                        (without any space). Example:
-                        `--stoplosses=-0.01,-0.1,-0.001`
-
-Common arguments:
-  -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
-  --logfile FILE        Log to the file specified. Special values are:
-                        'syslog', 'journald'. See the documentation for more
-                        details.
-  -V, --version         show program's version number and exit
-  -c PATH, --config PATH
-                        Specify configuration file (default:
-                        `userdir/config.json` or `config.json` whichever
-                        exists). Multiple --config options may be used. Can be
-                        set to `-` to read config from stdin.
-  -d PATH, --datadir PATH
-                        Path to directory with historical backtesting data.
-  --userdir PATH, --user-data-dir PATH
-                        Path to userdata directory.
-
-Strategy arguments:
-  -s NAME, --strategy NAME
-                        Specify strategy class name which will be used by the
-                        bot.
-  --strategy-path PATH  Specify additional strategy lookup path.
-
-```
-
-To understand edge and how to read the results, please read the [edge documentation](edge.md).
 
 ## Next step
 

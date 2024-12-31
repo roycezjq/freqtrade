@@ -2,6 +2,14 @@
 
 This page explains how to plot prices, indicators and profits.
 
+!!! Warning "Deprecated"
+    The commands described in this page (`plot-dataframe`, `plot-profit`) should be considered deprecated and are in maintenance mode.
+    This is mostly for the performance problems even medium sized plots can cause, but also because "store a file and open it in a browser" isn't very intuitive from a UI perspective.
+
+    While there are no immediate plans to remove them, they are not actively maintained - and may be removed short-term should major changes be required to keep them working.
+    
+    Please use [FreqUI](freq-ui.md) for plotting needs, which doesn't struggle with the same performance problems.
+
 ## Installation / Setup
 
 Plotting modules use the Plotly library. You can install / upgrade this by running the following command:
@@ -14,7 +22,7 @@ pip install -U -r requirements-plot.txt
 
 The `freqtrade plot-dataframe` subcommand shows an interactive graph with three subplots:
 
-* Main plot with candlestics and indicators following price (sma/ema)
+* Main plot with candlesticks and indicators following price (sma/ema)
 * Volume bars
 * Additional indicators as specified by `--indicators2`
 
@@ -31,13 +39,13 @@ usage: freqtrade plot-dataframe [-h] [-v] [--logfile FILE] [-V] [-c PATH]
                                 [--plot-limit INT] [--db-url PATH]
                                 [--trade-source {DB,file}] [--export EXPORT]
                                 [--export-filename PATH]
-                                [--timerange TIMERANGE] [-i TICKER_INTERVAL]
+                                [--timerange TIMERANGE] [-i TIMEFRAME]
                                 [--no-trades]
 
 optional arguments:
   -h, --help            show this help message and exit
   -p PAIRS [PAIRS ...], --pairs PAIRS [PAIRS ...]
-                        Show profits for only these pairs. Pairs are space-
+                        Limit command to these pairs. Pairs are space-
                         separated.
   --indicators1 INDICATORS1 [INDICATORS1 ...]
                         Set indicators from your strategy you want in the
@@ -65,9 +73,8 @@ optional arguments:
                         _today.json`
   --timerange TIMERANGE
                         Specify what timerange of data to use.
-  -i TICKER_INTERVAL, --ticker-interval TICKER_INTERVAL
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
+  -i TIMEFRAME, --timeframe TIMEFRAME
+                        Specify timeframe (`1m`, `5m`, `30m`, `1h`, `1d`).
   --no-trades           Skip using trades from backtesting file and DB.
 
 Common arguments:
@@ -91,12 +98,13 @@ Strategy arguments:
                         Specify strategy class name which will be used by the
                         bot.
   --strategy-path PATH  Specify additional strategy lookup path.
+
 ```
 
 Example:
 
 ``` bash
-freqtrade plot-dataframe -p BTC/ETH
+freqtrade plot-dataframe -p BTC/ETH --strategy AwesomeStrategy
 ```
 
 The `-p/--pairs` argument can be used to specify pairs you would like to plot.
@@ -106,9 +114,6 @@ The `-p/--pairs` argument can be used to specify pairs you would like to plot.
 
 Specify custom indicators.
 Use `--indicators1` for the main plot and `--indicators2` for the subplot below (if values are in a different range than prices).
-
-!!! Tip
-    You will almost certainly want to specify a custom strategy! This can be done by adding `-s Classname` / `--strategy ClassName` to the command.
 
 ``` bash
 freqtrade plot-dataframe --strategy AwesomeStrategy -p BTC/ETH --indicators1 sma ema --indicators2 macd
@@ -164,42 +169,117 @@ The resulting plot will have the following elements:
 
 An advanced plot configuration can be specified in the strategy in the `plot_config` parameter.
 
-Additional features when using plot_config include:
+Additional features when using `plot_config` include:
 
 * Specify colors per indicator
 * Specify additional subplots
+* Specify indicator pairs to fill area in between
 
-The sample plot configuration below specifies fixed colors for the indicators. Otherwise consecutive plots may produce different colorschemes each time, making comparisons difficult.
+The sample plot configuration below specifies fixed colors for the indicators. Otherwise, consecutive plots may produce different color schemes each time, making comparisons difficult.
 It also allows multiple subplots to display both MACD and RSI at the same time.
+
+Plot type can be configured using `type` key. Possible types are:
+
+* `scatter` corresponding to `plotly.graph_objects.Scatter` class (default).
+* `bar` corresponding to `plotly.graph_objects.Bar` class.
+
+Extra parameters to `plotly.graph_objects.*` constructor can be specified in `plotly` dict.
 
 Sample configuration with inline comments explaining the process:
 
 ``` python
-    plot_config = {
-        'main_plot': {
-            # Configuration for main plot indicators.
-            # Specifies `ema10` to be red, and `ema50` to be a shade of gray
-            'ema10': {'color': 'red'},
-            'ema50': {'color': '#CCCCCC'},
-            # By omitting color, a random color is selected.
-            'sar': {},
+@property
+def plot_config(self):
+    """
+        There are a lot of solutions how to build the return dictionary.
+        The only important point is the return value.
+        Example:
+            plot_config = {'main_plot': {}, 'subplots': {}}
+
+    """
+    plot_config = {}
+    plot_config['main_plot'] = {
+        # Configuration for main plot indicators.
+        # Assumes 2 parameters, emashort and emalong to be specified.
+        f'ema_{self.emashort.value}': {'color': 'red'},
+        f'ema_{self.emalong.value}': {'color': '#CCCCCC'},
+        # By omitting color, a random color is selected.
+        'sar': {},
+        # fill area between senkou_a and senkou_b
+        'senkou_a': {
+            'color': 'green', #optional
+            'fill_to': 'senkou_b',
+            'fill_label': 'Ichimoku Cloud', #optional
+            'fill_color': 'rgba(255,76,46,0.2)', #optional
         },
-        'subplots': {
-            # Create subplot MACD
-            "MACD": {
-                'macd': {'color': 'blue'},
-                'macdsignal': {'color': 'orange'},
-            },
-            # Additional subplot RSI
-            "RSI": {
-                'rsi': {'color': 'red'},
-            }
+        # plot senkou_b, too. Not only the area to it.
+        'senkou_b': {}
+    }
+    plot_config['subplots'] = {
+         # Create subplot MACD
+        "MACD": {
+            'macd': {'color': 'blue', 'fill_to': 'macdhist'},
+            'macdsignal': {'color': 'orange'},
+            'macdhist': {'type': 'bar', 'plotly': {'opacity': 0.9}}
+        },
+        # Additional subplot RSI
+        "RSI": {
+            'rsi': {'color': 'red'}
         }
     }
+
+    return plot_config
 ```
 
+??? Note "As attribute (former method)"
+    Assigning plot_config is also possible as Attribute (this used to be the default way).
+    This has the disadvantage that strategy parameters are not available, preventing certain configurations from working.
+
+    ``` python
+        plot_config = {
+            'main_plot': {
+                # Configuration for main plot indicators.
+                # Specifies `ema10` to be red, and `ema50` to be a shade of gray
+                'ema10': {'color': 'red'},
+                'ema50': {'color': '#CCCCCC'},
+                # By omitting color, a random color is selected.
+                'sar': {},
+            # fill area between senkou_a and senkou_b
+            'senkou_a': {
+                'color': 'green', #optional
+                'fill_to': 'senkou_b',
+                'fill_label': 'Ichimoku Cloud', #optional
+                'fill_color': 'rgba(255,76,46,0.2)', #optional
+            },
+            # plot senkou_b, too. Not only the area to it.
+            'senkou_b': {}
+            },
+            'subplots': {
+                # Create subplot MACD
+                "MACD": {
+                    'macd': {'color': 'blue', 'fill_to': 'macdhist'},
+                    'macdsignal': {'color': 'orange'},
+                    'macdhist': {'type': 'bar', 'plotly': {'opacity': 0.9}}
+                },
+                # Additional subplot RSI
+                "RSI": {
+                    'rsi': {'color': 'red'}
+                }
+            }
+        }
+
+    ```
+
+
 !!! Note
-    The above configuration assumes that `ema10`, `ema50`, `macd`, `macdsignal` and `rsi` are columns in the DataFrame created by the strategy.
+    The above configuration assumes that `ema10`, `ema50`, `senkou_a`, `senkou_b`,
+    `macd`, `macdsignal`, `macdhist` and `rsi` are columns in the DataFrame created by the strategy.
+
+!!! Warning
+    `plotly` arguments are only supported with plotly library and will not work with freq-ui.
+
+!!! Note "Trade position adjustments"
+    If `position_adjustment_enable` / `adjust_trade_position()` is used, the trade initial buy price is averaged over multiple orders and the trade start price will most likely appear outside the candle range.
 
 ## Plot profit
 
@@ -211,6 +291,8 @@ The `plot-profit` subcommand shows an interactive graph with three plots:
 * The summarized profit made by backtesting.
 Note that this is not the real-world profit, but more of an estimate.
 * Profit for each individual pair.
+* Parallelism of trades.
+* Underwater (Periods of drawdown).
 
 The first graph is good to get a grip of how the overall market progresses.
 
@@ -220,26 +302,29 @@ This graph will also highlight the start (and end) of the Max drawdown period.
 
 The third graph can be useful to spot outliers, events in pairs that cause profit spikes.
 
+The forth graph can help you analyze trade parallelism, showing how often max_open_trades have been maxed out.
+
 Possible options for the `freqtrade plot-profit` subcommand:
 
 ```
 usage: freqtrade plot-profit [-h] [-v] [--logfile FILE] [-V] [-c PATH]
-                             [-d PATH] [--userdir PATH] [-p PAIRS [PAIRS ...]]
+                             [-d PATH] [--userdir PATH] [-s NAME]
+                             [--strategy-path PATH] [-p PAIRS [PAIRS ...]]
                              [--timerange TIMERANGE] [--export EXPORT]
                              [--export-filename PATH] [--db-url PATH]
-                             [--trade-source {DB,file}] [-i TICKER_INTERVAL]
+                             [--trade-source {DB,file}] [-i TIMEFRAME]
 
 optional arguments:
   -h, --help            show this help message and exit
   -p PAIRS [PAIRS ...], --pairs PAIRS [PAIRS ...]
-                        Show profits for only these pairs. Pairs are space-
+                        Limit command to these pairs. Pairs are space-
                         separated.
   --timerange TIMERANGE
                         Specify what timerange of data to use.
   --export EXPORT       Export backtest results, argument are: trades.
                         Example: `--export=trades`
-  --export-filename PATH
-                        Save backtest results to the file with this filename.
+  --export-filename PATH, --backtest-filename PATH
+                        Use backtest results from this filename.
                         Requires `--export` to be set as well. Example:
                         `--export-filename=user_data/backtest_results/backtest
                         _today.json`
@@ -250,9 +335,9 @@ optional arguments:
   --trade-source {DB,file}
                         Specify the source for trades (Can be DB or file
                         (backtest file)) Default: file
-  -i TICKER_INTERVAL, --ticker-interval TICKER_INTERVAL
-                        Specify ticker interval (`1m`, `5m`, `30m`, `1h`,
-                        `1d`).
+  -i TIMEFRAME, --timeframe TIMEFRAME
+                        Specify timeframe (`1m`, `5m`, `30m`, `1h`, `1d`).
+  --auto-open           Automatically open generated plot.
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
@@ -261,13 +346,20 @@ Common arguments:
                         details.
   -V, --version         show program's version number and exit
   -c PATH, --config PATH
-                        Specify configuration file (default: `config.json`).
-                        Multiple --config options may be used. Can be set to
-                        `-` to read config from stdin.
+                        Specify configuration file (default:
+                        `userdir/config.json` or `config.json` whichever
+                        exists). Multiple --config options may be used. Can be
+                        set to `-` to read config from stdin.
   -d PATH, --datadir PATH
                         Path to directory with historical backtesting data.
   --userdir PATH, --user-data-dir PATH
                         Path to userdata directory.
+
+Strategy arguments:
+  -s NAME, --strategy NAME
+                        Specify strategy class name which will be used by the
+                        bot.
+  --strategy-path PATH  Specify additional strategy lookup path.
 
 ```
 
@@ -278,7 +370,7 @@ Examples:
 Use custom backtest-export file
 
 ``` bash
-freqtrade plot-profit  -p LTC/BTC --export-filename user_data/backtest_results/backtest-result-Strategy005.json
+freqtrade plot-profit  -p LTC/BTC --export-filename user_data/backtest_results/backtest-result.json
 ```
 
 Use custom database
